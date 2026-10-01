@@ -9,14 +9,18 @@ import {
   updateCurrencyRate,
   setMasterCurrency,
 } from '@/lib/db/queries';
+import { requireAuth } from '@/lib/auth-helper';
 
 export async function GET(request: Request) {
   try {
+    const { user, errorResponse } = await requireAuth();
+    if (errorResponse) return errorResponse;
+
     const { searchParams } = new URL(request.url);
     const bookId = searchParams.get('bookId') ? parseInt(searchParams.get('bookId')!, 10) : undefined;
 
     const institutions = getInstitutions();
-    const accounts = getAccounts(bookId);
+    const accounts = getAccounts(bookId, user!.id);
     const currencies = getCurrencies();
     const masterCurrency = getMasterCurrency();
 
@@ -36,6 +40,9 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    const { errorResponse } = await requireAuth();
+    if (errorResponse) return errorResponse;
+
     const body = await request.json();
     const { action, payload } = body;
 

@@ -24,6 +24,7 @@ import {
   WeekdayExpenseItem,
   PaymentMethodBreakdown,
   AccountExpenseBreakdown,
+  MonthlyGlPreferences,
 } from '../types';
 import { getDaysInMonth, getMonthName, isWeekend, isCurrentDay, formatDateISO, getDayOfWeekAbbr } from '../formatters';
 
@@ -59,34 +60,46 @@ export function setMasterCurrency(code: string): void {
 }
 
 // --- Account Books ---
-export function getAccountBooks(): AccountBook[] {
+export function getAccountBooks(userId?: number): AccountBook[] {
   const db = getDb();
-  const rows = db.prepare(`
+  let query = `
     SELECT b.*, c.symbol as currency_symbol
     FROM account_books b
     LEFT JOIN currencies c ON b.currency_code = c.code
-    ORDER BY b.is_default DESC, b.sort_order ASC, b.name ASC
-  `).all() as unknown as AccountBook[];
+  `;
+  const params: (string | number)[] = [];
+  if (userId) {
+    query += ` WHERE b.user_id = ?`;
+    params.push(userId);
+  }
+  query += ` ORDER BY b.is_default DESC, b.sort_order ASC, b.name ASC`;
+  const rows = db.prepare(query).all(...params) as unknown as AccountBook[];
   return rows;
 }
 
-export function getAccountBookById(id: number): AccountBook | null {
+export function getAccountBookById(id: number, userId?: number): AccountBook | null {
   const db = getDb();
-  const row = db.prepare(`
+  let query = `
     SELECT b.*, c.symbol as currency_symbol
     FROM account_books b
     LEFT JOIN currencies c ON b.currency_code = c.code
     WHERE b.id = ?
-  `).get(id) as unknown as AccountBook;
+  `;
+  const params: (string | number)[] = [id];
+  if (userId) {
+    query += ` AND b.user_id = ?`;
+    params.push(userId);
+  }
+  const row = db.prepare(query).get(...params) as unknown as AccountBook;
   return row || null;
 }
 
-export function createAccountBook(data: { name: string; currency_code: string; description?: string }): AccountBook {
+export function createAccountBook(data: { user_id?: number; name: string; currency_code: string; description?: string }): AccountBook {
   const db = getDb();
   const res = db.prepare(`
-    INSERT INTO account_books (name, currency_code, description, is_default, sort_order)
-    VALUES (?, ?, ?, 0, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM account_books))
-  `).run(data.name, data.currency_code, data.description || null);
+    INSERT INTO account_books (user_id, name, currency_code, description, is_default, sort_order)
+    VALUES (?, ?, ?, ?, 0, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM account_books WHERE (? IS NULL OR user_id = ?)))
+  `).run(data.user_id || null, data.name, data.currency_code, data.description || null, data.user_id || null, data.user_id || null);
   
   const newId = Number(res.lastInsertRowid);
   // Create default cash account for this book
@@ -98,7 +111,7 @@ export function createAccountBook(data: { name: string; currency_code: string; d
     opening_balance: 0,
   });
 
-  return getAccountBookById(newId)!;
+  return getAccountBookById(newId, data.user_id)!;
 }
 
 // --- Institutions ---
@@ -117,7 +130,7 @@ export function createInstitution(data: { name: string; country_code: string; in
 }
 
 // --- Accounts ---
-export function getAccounts(bookId?: number): Account[] {
+export function getAccounts(bookId?: number, userId?: number): Account[] {
   const db = getDb();
   let query = `
     SELECT a.*, b.name as book_name, i.name as institution_name, c.symbol as currency_symbol
@@ -131,6 +144,10 @@ export function getAccounts(bookId?: number): Account[] {
   if (bookId) {
     query += ' AND a.book_id = ?';
     params.push(bookId);
+  }
+  if (userId) {
+    query += ' AND b.user_id = ?';
+    params.push(userId);
   }
   query += ' ORDER BY a.type ASC, a.name ASC';
   return db.prepare(query).all(...params) as unknown as Account[];
@@ -170,29 +187,39 @@ export function createAccount(data: {
 
 // --- Categories, Main Heads & Budgets ---
 
-export function getCategories(bookId?: number, monthStr?: string): Category[] {
+export function getCategories(bookId?: number, monthStr?: string, userId?: number): Category[] {
   const db = getDb();
-  const query = `
+  let query = `
     SELECT 
-      c.id, c.head_id, c.name, c.group_name, c.icon, c.color, c.sort_order,
+      c.id, c.user_id, c.head_id, c.name, c.group_name, c.icon, c.color, c.sort_order,
       h.name as head_name, h.icon as head_icon,
       b.amount as monthly_budget
     FROM categories c
     LEFT JOIN category_heads h ON c.head_id = h.id
     LEFT JOIN budgets b ON c.id = b.category_id AND b.book_id = ? AND b.month = ?
-    ORDER BY COALESCE(h.sort_order, 999) ASC, c.sort_order ASC, c.name ASC
   `;
-  const rows = db.prepare(query).all(bookId || 0, monthStr || '') as unknown as Category[];
+  const params: (string | number)[] = [bookId || 0, monthStr || ''];
+  if (userId) {
+    query += ` WHERE (c.user_id = ? OR c.user_id IS NULL)`;
+    params.push(userId);
+  }
+  query += ` ORDER BY COALESCE(h.sort_order, 999) ASC, c.sort_order ASC, c.name ASC`;
+  const rows = db.prepare(query).all(...params) as unknown as Category[];
   return rows;
 }
 
-export function getCategoryHeads(): CategoryHead[] {
+export function getCategoryHeads(userId?: number): CategoryHead[] {
   const db = getDb();
-  const heads = db.prepare(`
-    SELECT * FROM category_heads ORDER BY sort_order ASC, name ASC
-  `).all() as unknown as CategoryHead[];
+  let query = `SELECT * FROM category_heads`;
+  const params: (string | number)[] = [];
+  if (userId) {
+    query += ` WHERE (user_id = ? OR user_id IS NULL)`;
+    params.push(userId);
+  }
+  query += ` ORDER BY sort_order ASC, name ASC`;
+  const heads = db.prepare(query).all(...params) as unknown as CategoryHead[];
 
-  const categories = getCategories();
+  const categories = getCategories(undefined, undefined, userId);
 
   for (const h of heads) {
     h.sub_heads = categories.filter((c) => c.head_id === h.id || c.group_name === h.name);
@@ -202,27 +229,33 @@ export function getCategoryHeads(): CategoryHead[] {
   return heads;
 }
 
-export function getCategoryHeadById(id: number): CategoryHead | null {
+export function getCategoryHeadById(id: number, userId?: number): CategoryHead | null {
   const db = getDb();
-  const head = db.prepare('SELECT * FROM category_heads WHERE id = ?').get(id) as unknown as CategoryHead | undefined;
+  let query = 'SELECT * FROM category_heads WHERE id = ?';
+  const params: (string | number)[] = [id];
+  if (userId) {
+    query += ' AND (user_id = ? OR user_id IS NULL)';
+    params.push(userId);
+  }
+  const head = db.prepare(query).get(...params) as unknown as CategoryHead | undefined;
   if (!head) return null;
-  const categories = getCategories();
+  const categories = getCategories(undefined, undefined, userId);
   head.sub_heads = categories.filter((c) => c.head_id === head.id || c.group_name === head.name);
   head.sub_categories_count = head.sub_heads.length;
   return head;
 }
 
-export function createCategoryHead(data: { name: string; icon?: string; color?: string; sort_order?: number }): CategoryHead {
+export function createCategoryHead(data: { user_id?: number; name: string; icon?: string; color?: string; sort_order?: number }): CategoryHead {
   const db = getDb();
-  const nextOrderRow = db.prepare('SELECT COALESCE(MAX(sort_order), 0) + 1 as next_order FROM category_heads').get() as { next_order: number };
+  const nextOrderRow = db.prepare('SELECT COALESCE(MAX(sort_order), 0) + 1 as next_order FROM category_heads WHERE (? IS NULL OR user_id = ?)').get(data.user_id || null, data.user_id || null) as { next_order: number };
   const sortOrder = data.sort_order ?? nextOrderRow.next_order;
 
   const res = db.prepare(`
-    INSERT INTO category_heads (name, icon, color, sort_order)
-    VALUES (?, ?, ?, ?)
-  `).run(data.name.trim(), data.icon || '📁', data.color || '#6366F1', sortOrder);
+    INSERT INTO category_heads (user_id, name, icon, color, sort_order)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(data.user_id || null, data.name.trim(), data.icon || '📁', data.color || '#6366F1', sortOrder);
 
-  return getCategoryHeadById(Number(res.lastInsertRowid))!;
+  return getCategoryHeadById(Number(res.lastInsertRowid), data.user_id)!;
 }
 
 export function updateCategoryHead(id: number, data: { name: string; icon?: string; color?: string; sort_order?: number }): CategoryHead {
@@ -275,6 +308,7 @@ export function deleteCategoryHead(id: number, cascade: boolean = false): void {
 }
 
 export function createCategory(data: {
+  user_id?: number;
   head_id?: number | null;
   name: string;
   group_name?: string;
@@ -297,13 +331,13 @@ export function createCategory(data: {
     }
   }
 
-  const nextOrderRow = db.prepare('SELECT COALESCE(MAX(sort_order), 0) + 1 as next_order FROM categories').get() as { next_order: number };
+  const nextOrderRow = db.prepare('SELECT COALESCE(MAX(sort_order), 0) + 1 as next_order FROM categories WHERE (? IS NULL OR user_id = ?)').get(data.user_id || null, data.user_id || null) as { next_order: number };
   const sortOrder = data.sort_order ?? nextOrderRow.next_order;
 
   const res = db.prepare(`
-    INSERT INTO categories (head_id, name, group_name, icon, color, sort_order)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(data.head_id || null, data.name.trim(), groupName, icon || '🏷️', color || '#6366F1', sortOrder);
+    INSERT INTO categories (user_id, head_id, name, group_name, icon, color, sort_order)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(data.user_id || null, data.head_id || null, data.name.trim(), groupName, icon || '🏷️', color || '#6366F1', sortOrder);
 
   const newId = Number(res.lastInsertRowid);
   return db.prepare('SELECT * FROM categories WHERE id = ?').get(newId) as unknown as Category;
@@ -368,29 +402,59 @@ export function deleteCategory(id: number): { success: boolean; transactionsCoun
   }
 }
 
-export function resetCategoriesToDefault(): void {
+export function resetCategoriesToDefault(userId?: number): void {
   const db = getDb();
   db.exec('BEGIN TRANSACTION;');
   try {
-    db.prepare('UPDATE transactions SET category_id = NULL').run();
-    db.prepare('DELETE FROM budgets').run();
-    db.prepare('DELETE FROM categories').run();
-    db.prepare('DELETE FROM category_heads').run();
+    if (userId) {
+      db.prepare(`
+        UPDATE transactions SET category_id = NULL 
+        WHERE category_id IN (SELECT id FROM categories WHERE user_id = ?)
+      `).run(userId);
+      db.prepare(`
+        DELETE FROM budgets 
+        WHERE category_id IN (SELECT id FROM categories WHERE user_id = ?)
+      `).run(userId);
+      db.prepare('DELETE FROM categories WHERE user_id = ?').run(userId);
+      db.prepare('DELETE FROM category_heads WHERE user_id = ?').run(userId);
 
-    const insertHead = db.prepare(`
-      INSERT INTO category_heads (name, icon, color, sort_order)
-      VALUES (?, ?, ?, ?)
-    `);
-    const insertSub = db.prepare(`
-      INSERT INTO categories (head_id, name, group_name, icon, color, sort_order)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `);
+      const insertHead = db.prepare(`
+        INSERT INTO category_heads (user_id, name, icon, color, sort_order)
+        VALUES (?, ?, ?, ?, ?)
+      `);
+      const insertSub = db.prepare(`
+        INSERT INTO categories (user_id, head_id, name, group_name, icon, color, sort_order)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `);
 
-    for (const head of SEED_CATEGORY_HEADS) {
-      const res = insertHead.run(head.name, head.icon, head.color, head.sort_order);
-      const headId = Number(res.lastInsertRowid);
-      for (const sub of head.sub_heads) {
-        insertSub.run(headId, sub.name, head.name, sub.icon || head.icon, sub.color || head.color, sub.sort_order);
+      for (const head of SEED_CATEGORY_HEADS) {
+        const res = insertHead.run(userId, head.name, head.icon, head.color, head.sort_order);
+        const headId = Number(res.lastInsertRowid);
+        for (const sub of head.sub_heads) {
+          insertSub.run(userId, headId, sub.name, head.name, sub.icon || head.icon, sub.color || head.color, sub.sort_order);
+        }
+      }
+    } else {
+      db.prepare('UPDATE transactions SET category_id = NULL').run();
+      db.prepare('DELETE FROM budgets').run();
+      db.prepare('DELETE FROM categories').run();
+      db.prepare('DELETE FROM category_heads').run();
+
+      const insertHead = db.prepare(`
+        INSERT INTO category_heads (name, icon, color, sort_order)
+        VALUES (?, ?, ?, ?)
+      `);
+      const insertSub = db.prepare(`
+        INSERT INTO categories (head_id, name, group_name, icon, color, sort_order)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+
+      for (const head of SEED_CATEGORY_HEADS) {
+        const res = insertHead.run(head.name, head.icon, head.color, head.sort_order);
+        const headId = Number(res.lastInsertRowid);
+        for (const sub of head.sub_heads) {
+          insertSub.run(headId, sub.name, head.name, sub.icon || head.icon, sub.color || head.color, sub.sort_order);
+        }
       }
     }
 
@@ -487,9 +551,9 @@ export function createTransaction(data: {
   }
 }
 
-export function getTransactionById(id: number): Transaction | null {
+export function getTransactionById(id: number, userId?: number): Transaction | null {
   const db = getDb();
-  const row = db.prepare(`
+  let query = `
     SELECT t.*, c.name as category_name, c.group_name as category_group, c.color as category_color,
            a.name as account_name, a.type as account_type,
            curr.symbol as currency_symbol, b.name as book_name,
@@ -501,13 +565,19 @@ export function getTransactionById(id: number): Transaction | null {
     LEFT JOIN currencies curr ON t.currency_code = curr.code
     LEFT JOIN account_books b ON t.book_id = b.id
     WHERE t.id = ?
-  `).get(id) as unknown as Transaction;
+  `;
+  const params: (string | number)[] = [id];
+  if (userId) {
+    query += ' AND b.user_id = ?';
+    params.push(userId);
+  }
+  const row = db.prepare(query).get(...params) as unknown as Transaction;
   return row || null;
 }
 
-export function deleteTransaction(id: number): void {
+export function deleteTransaction(id: number, userId?: number): void {
   const db = getDb();
-  const tx = getTransactionById(id);
+  const tx = getTransactionById(id, userId);
   if (!tx) return;
 
   db.exec('BEGIN TRANSACTION;');
@@ -539,6 +609,7 @@ export function getTransactions(filter: {
   category_id?: number;
   payment_method?: string;
   limit?: number;
+  userId?: number;
 }): Transaction[] {
   const db = getDb();
   let query = `
@@ -556,6 +627,10 @@ export function getTransactions(filter: {
   `;
   const params: (string | number | null)[] = [];
 
+  if (filter.userId) {
+    query += ' AND b.user_id = ?';
+    params.push(filter.userId);
+  }
   if (filter.book_id) {
     query += ' AND t.book_id = ?';
     params.push(filter.book_id);
@@ -585,17 +660,386 @@ export function getTransactions(filter: {
   return db.prepare(query).all(...params) as unknown as Transaction[];
 }
 
-// --- Monthly Worksheet Matrix Engine ---
-export function getMonthlyWorksheetData(bookId: number, year: number, month: number): MonthlyWorksheetData {
+// --- Monthly Worksheet GL Heads Preferences Engine ---
+
+export function getMonthlyWorksheetGlPreferences(bookId: number, monthStr: string, userId: number): MonthlyGlPreferences {
   const db = getDb();
-  const book = getAccountBookById(bookId) || getAccountBooks()[0];
+
+  // 1. Check saved heads in monthly_worksheet_heads
+  const savedHeadRows = db.prepare(`
+    SELECT head_id FROM monthly_worksheet_heads
+    WHERE user_id = ? AND book_id = ? AND month = ?
+    ORDER BY sort_order ASC, id ASC
+  `).all(userId, bookId, monthStr) as { head_id: number }[];
+
+  const savedCatRows = db.prepare(`
+    SELECT category_id FROM monthly_worksheet_categories
+    WHERE user_id = ? AND book_id = ? AND month = ?
+  `).all(userId, bookId, monthStr) as { category_id: number }[];
+
+  const hasSavedPreferences = savedHeadRows.length > 0 || savedCatRows.length > 0;
+
+  // 2. Find transactions in this month and book to get heads/categories with transactions
+  const txSummaryRows = db.prepare(`
+    SELECT t.category_id, c.head_id, COUNT(*) as tx_count
+    FROM transactions t
+    JOIN categories c ON t.category_id = c.id
+    WHERE t.book_id = ? AND t.date LIKE ?
+    GROUP BY t.category_id, c.head_id
+  `).all(bookId, `${monthStr}%`) as { category_id: number; head_id: number | null; tx_count: number }[];
+
+  const transactionCountsByCategory: Record<number, number> = {};
+  const transactionCountsByHead: Record<number, number> = {};
+  const categoriesWithTransactions: number[] = [];
+  const headsWithTransactions: number[] = [];
+
+  for (const row of txSummaryRows) {
+    if (row.category_id) {
+      transactionCountsByCategory[row.category_id] = row.tx_count;
+      categoriesWithTransactions.push(row.category_id);
+    }
+    if (row.head_id) {
+      transactionCountsByHead[row.head_id] = (transactionCountsByHead[row.head_id] || 0) + row.tx_count;
+      if (!headsWithTransactions.includes(row.head_id)) {
+        headsWithTransactions.push(row.head_id);
+      }
+    }
+  }
+
+  // 3. Compute selected heads and categories
+  let selectedHeadIds: number[] = [];
+  let selectedCategoryIds: number[] = [];
+
+  if (hasSavedPreferences) {
+    selectedHeadIds = savedHeadRows.map(r => r.head_id);
+    selectedCategoryIds = savedCatRows.map(r => r.category_id);
+
+    // Ensure any head/category with transactions is also in the selected lists
+    for (const hId of headsWithTransactions) {
+      if (!selectedHeadIds.includes(hId)) selectedHeadIds.push(hId);
+    }
+    for (const cId of categoriesWithTransactions) {
+      if (!selectedCategoryIds.includes(cId)) selectedCategoryIds.push(cId);
+    }
+  } else if (headsWithTransactions.length > 0) {
+    // Has transactions but no saved preferences yet
+    selectedHeadIds = [...headsWithTransactions];
+    selectedCategoryIds = [...categoriesWithTransactions];
+  } else {
+    // No saved preferences and no transactions
+    selectedHeadIds = [];
+    selectedCategoryIds = [];
+  }
+
+  // 4. Get available heads with sub_heads for this user
+  const availableHeads = getCategoryHeads(userId);
+
+  // 5. Look for previous month's preferences
+  const [y, m] = monthStr.split('-').map(Number);
+  const prevDate = new Date(y, m - 2, 1);
+  const prevMonthStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
+
+  const prevMonthHeads = db.prepare(`
+    SELECT DISTINCT head_id FROM monthly_worksheet_heads
+    WHERE user_id = ? AND book_id = ? AND month = ?
+  `).all(userId, bookId, prevMonthStr) as { head_id: number }[];
+
+  let previousMonth: { month: string; headIds: number[]; count: number } | null = null;
+  if (prevMonthHeads.length > 0) {
+    previousMonth = {
+      month: prevMonthStr,
+      headIds: prevMonthHeads.map(r => r.head_id),
+      count: prevMonthHeads.length,
+    };
+  } else {
+    // Check if any previous month has saved heads
+    const anyPrev = db.prepare(`
+      SELECT month, COUNT(DISTINCT head_id) as count
+      FROM monthly_worksheet_heads
+      WHERE user_id = ? AND book_id = ? AND month < ?
+      GROUP BY month
+      ORDER BY month DESC
+      LIMIT 1
+    `).get(userId, bookId, monthStr) as { month: string; count: number } | undefined;
+
+    if (anyPrev) {
+      const anyPrevHeads = db.prepare(`
+        SELECT DISTINCT head_id FROM monthly_worksheet_heads
+        WHERE user_id = ? AND book_id = ? AND month = ?
+      `).all(userId, bookId, anyPrev.month) as { head_id: number }[];
+      previousMonth = {
+        month: anyPrev.month,
+        headIds: anyPrevHeads.map(r => r.head_id),
+        count: anyPrev.count,
+      };
+    }
+  }
+
+  return {
+    bookId,
+    month: monthStr,
+    hasSavedPreferences,
+    selectedHeadIds,
+    selectedCategoryIds,
+    headsWithTransactions,
+    categoriesWithTransactions,
+    transactionCountsByHead,
+    transactionCountsByCategory,
+    availableHeads,
+    previousMonth,
+  };
+}
+
+export function saveMonthlyWorksheetGlPreferences(data: {
+  bookId: number;
+  monthStr: string;
+  userId: number;
+  headIds: number[];
+  categoryIds?: number[];
+}): MonthlyGlPreferences {
+  const db = getDb();
+  const { bookId, monthStr, userId, headIds } = data;
+
+  // Find all categories for the selected heads
+  let categoryIdsToSave = data.categoryIds;
+  if (!categoryIdsToSave || categoryIdsToSave.length === 0) {
+    if (headIds.length > 0) {
+      const placeholders = headIds.map(() => '?').join(',');
+      const catRows = db.prepare(`
+        SELECT id FROM categories
+        WHERE head_id IN (${placeholders}) AND (user_id = ? OR user_id IS NULL)
+      `).all(...headIds, userId) as { id: number }[];
+      categoryIdsToSave = catRows.map(r => r.id);
+    } else {
+      categoryIdsToSave = [];
+    }
+  }
+
+  // Ensure any category with transactions in this month is also preserved
+  const txCats = db.prepare(`
+    SELECT DISTINCT t.category_id, c.head_id
+    FROM transactions t
+    JOIN categories c ON t.category_id = c.id
+    WHERE t.book_id = ? AND t.date LIKE ?
+  `).all(bookId, `${monthStr}%`) as { category_id: number; head_id: number | null }[];
+
+  const finalHeadIds = [...new Set(headIds)];
+  const finalCategoryIds = [...new Set(categoryIdsToSave)];
+
+  for (const r of txCats) {
+    if (r.category_id && !finalCategoryIds.includes(r.category_id)) {
+      finalCategoryIds.push(r.category_id);
+    }
+    if (r.head_id && !finalHeadIds.includes(r.head_id)) {
+      finalHeadIds.push(r.head_id);
+    }
+  }
+
+  db.exec('BEGIN TRANSACTION;');
+  try {
+    db.prepare(`
+      DELETE FROM monthly_worksheet_heads
+      WHERE user_id = ? AND book_id = ? AND month = ?
+    `).run(userId, bookId, monthStr);
+
+    db.prepare(`
+      DELETE FROM monthly_worksheet_categories
+      WHERE user_id = ? AND book_id = ? AND month = ?
+    `).run(userId, bookId, monthStr);
+
+    const insertHead = db.prepare(`
+      INSERT INTO monthly_worksheet_heads (user_id, book_id, month, head_id, sort_order)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    finalHeadIds.forEach((headId, idx) => {
+      insertHead.run(userId, bookId, monthStr, headId, idx + 1);
+    });
+
+    const insertCat = db.prepare(`
+      INSERT INTO monthly_worksheet_categories (user_id, book_id, month, category_id)
+      VALUES (?, ?, ?, ?)
+    `);
+    finalCategoryIds.forEach((catId) => {
+      insertCat.run(userId, bookId, monthStr, catId);
+    });
+
+    db.exec('COMMIT;');
+    return getMonthlyWorksheetGlPreferences(bookId, monthStr, userId);
+  } catch (e) {
+    db.exec('ROLLBACK;');
+    throw e;
+  }
+}
+
+export function addGlHeadToMonth(bookId: number, monthStr: string, userId: number, headId: number): MonthlyGlPreferences {
+  const current = getMonthlyWorksheetGlPreferences(bookId, monthStr, userId);
+  const headIds = [...new Set([...current.selectedHeadIds, headId])];
+
+  const db = getDb();
+  const subCats = db.prepare(`
+    SELECT id FROM categories WHERE head_id = ? AND (user_id = ? OR user_id IS NULL)
+  `).all(headId, userId) as { id: number }[];
+
+  const categoryIds = [...new Set([...current.selectedCategoryIds, ...subCats.map(c => c.id)])];
+  return saveMonthlyWorksheetGlPreferences({ bookId, monthStr, userId, headIds, categoryIds });
+}
+
+export function removeGlHeadFromMonth(bookId: number, monthStr: string, userId: number, headId: number): MonthlyGlPreferences {
+  const current = getMonthlyWorksheetGlPreferences(bookId, monthStr, userId);
+  if (current.headsWithTransactions.includes(headId)) {
+    throw new Error('Cannot remove a GL head that has transactions recorded in this month.');
+  }
+
+  const headIds = current.selectedHeadIds.filter(id => id !== headId);
+  const db = getDb();
+  const subCats = db.prepare(`
+    SELECT id FROM categories WHERE head_id = ?
+  `).all(headId) as { id: number }[];
+  const subCatIdSet = new Set(subCats.map(c => c.id));
+
+  const categoryIds = current.selectedCategoryIds.filter(id => !subCatIdSet.has(id));
+  return saveMonthlyWorksheetGlPreferences({ bookId, monthStr, userId, headIds, categoryIds });
+}
+
+export function copyPreviousMonthGlPreferences(bookId: number, currentMonthStr: string, userId: number, sourceMonthStr?: string): MonthlyGlPreferences {
+  const db = getDb();
+  let source = sourceMonthStr;
+  if (!source) {
+    const prevPref = db.prepare(`
+      SELECT month FROM monthly_worksheet_heads
+      WHERE user_id = ? AND book_id = ? AND month < ?
+      ORDER BY month DESC LIMIT 1
+    `).get(userId, bookId, currentMonthStr) as { month: string } | undefined;
+    source = prevPref?.month;
+  }
+
+  if (!source) {
+    const [y, m] = currentMonthStr.split('-').map(Number);
+    const d = new Date(y, m - 2, 1);
+    source = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  }
+
+  const prevPrefs = getMonthlyWorksheetGlPreferences(bookId, source, userId);
+  if (prevPrefs.selectedHeadIds.length === 0) {
+    throw new Error(`No GL heads were found in previous month (${source}) to copy.`);
+  }
+
+  return saveMonthlyWorksheetGlPreferences({
+    bookId,
+    monthStr: currentMonthStr,
+    userId,
+    headIds: prevPrefs.selectedHeadIds,
+    categoryIds: prevPrefs.selectedCategoryIds,
+  });
+}
+
+export function addAllGlHeadsToMonth(bookId: number, monthStr: string, userId: number): MonthlyGlPreferences {
+  const allHeads = getCategoryHeads(userId);
+  const headIds = allHeads.map(h => h.id);
+  const allCats = getCategories(undefined, undefined, userId);
+  const categoryIds = allCats.map(c => c.id);
+  return saveMonthlyWorksheetGlPreferences({ bookId, monthStr, userId, headIds, categoryIds });
+}
+
+export function reorderMonthlyGlHeads(
+  bookId: number,
+  monthStr: string,
+  userId: number,
+  orderedHeadIds: number[]
+): MonthlyGlPreferences {
+  const db = getDb();
+  db.exec('BEGIN TRANSACTION;');
+  try {
+    const updateStmt = db.prepare(`
+      UPDATE monthly_worksheet_heads
+      SET sort_order = ?
+      WHERE user_id = ? AND book_id = ? AND month = ? AND head_id = ?
+    `);
+    orderedHeadIds.forEach((headId, index) => {
+      updateStmt.run(index + 1, userId, bookId, monthStr, headId);
+    });
+    db.exec('COMMIT;');
+    return getMonthlyWorksheetGlPreferences(bookId, monthStr, userId);
+  } catch (e) {
+    db.exec('ROLLBACK;');
+    throw e;
+  }
+}
+
+export function moveMonthlyGlHead(
+  bookId: number,
+  monthStr: string,
+  userId: number,
+  headId: number,
+  direction: 'up' | 'down'
+): MonthlyGlPreferences {
+  const prefs = getMonthlyWorksheetGlPreferences(bookId, monthStr, userId);
+  let currentHeadIds = [...prefs.selectedHeadIds];
+
+  // If preferences weren't explicitly saved yet, initialize them first
+  if (!prefs.hasSavedPreferences) {
+    saveMonthlyWorksheetGlPreferences({
+      bookId,
+      monthStr,
+      userId,
+      headIds: currentHeadIds,
+      categoryIds: prefs.selectedCategoryIds,
+    });
+    const refreshed = getMonthlyWorksheetGlPreferences(bookId, monthStr, userId);
+    currentHeadIds = [...refreshed.selectedHeadIds];
+  }
+
+  const index = currentHeadIds.indexOf(headId);
+  if (index === -1) return prefs;
+
+  const targetIndex = direction === 'up' ? index - 1 : index + 1;
+  if (targetIndex < 0 || targetIndex >= currentHeadIds.length) {
+    return prefs;
+  }
+
+  // Swap positions
+  const temp = currentHeadIds[index];
+  currentHeadIds[index] = currentHeadIds[targetIndex];
+  currentHeadIds[targetIndex] = temp;
+
+  return reorderMonthlyGlHeads(bookId, monthStr, userId, currentHeadIds);
+}
+
+// --- Monthly Worksheet Matrix Engine ---
+export function getMonthlyWorksheetData(bookId: number, year: number, month: number, userId?: number): MonthlyWorksheetData {
+  const db = getDb();
+  const book = (bookId ? getAccountBookById(bookId, userId) : null) || getAccountBooks(userId)[0];
+  if (!book) {
+    throw new Error('No account book found. Please create an account book first.');
+  }
   const masterCurrency = getMasterCurrency();
   const daysInMonth = getDaysInMonth(year, month);
   const monthStr = `${year}-${String(month).padStart(2, '0')}`;
   const monthName = getMonthName(month);
 
-  // 1. Get Categories and Budgets
-  const categories = getCategories(book.id, monthStr);
+  // 1. Get Categories and Budgets filtered by user's GL Heads preferences for this month
+  const effectiveUserId = userId || 1;
+  const glPrefs = getMonthlyWorksheetGlPreferences(book.id, monthStr, effectiveUserId);
+  const allCategories = getCategories(book.id, monthStr, userId);
+
+  let categories: Category[] = [];
+  if (glPrefs.hasSavedPreferences) {
+    const selectedCatSet = new Set(glPrefs.selectedCategoryIds);
+    const selectedHeadSet = new Set(glPrefs.selectedHeadIds);
+    categories = allCategories.filter(
+      (c) => selectedCatSet.has(c.id) || (c.head_id && selectedHeadSet.has(c.head_id))
+    );
+  } else if (glPrefs.headsWithTransactions.length > 0) {
+    const txCatSet = new Set(glPrefs.categoriesWithTransactions);
+    const txHeadSet = new Set(glPrefs.headsWithTransactions);
+    categories = allCategories.filter(
+      (c) => txCatSet.has(c.id) || (c.head_id && txHeadSet.has(c.head_id))
+    );
+  } else {
+    // Unconfigured month with no transactions: empty GL heads list so user adds heads for that month
+    categories = [];
+  }
+
   const categoriesMap = new Map<number, Category>();
   categories.forEach(c => categoriesMap.set(c.id, c));
 
@@ -603,6 +1047,7 @@ export function getMonthlyWorksheetData(bookId: number, year: number, month: num
   const transactions = getTransactions({
     book_id: book.id,
     month: monthStr,
+    userId,
   });
 
   // 3. Find opening cash for this book at beginning of month
@@ -729,14 +1174,35 @@ export function getMonthlyWorksheetData(bookId: number, year: number, month: num
     totalBudget += row.budget;
   }
 
-  // 9. Group rows by category group_name
+  // 9. Group rows by category group_name in customized GL Head order
   const categoriesByGroup: { [group: string]: CategoryWorksheetRow[] } = {};
+
+  // Initialize groups in the exact order of glPrefs.selectedHeadIds
+  const headMap = new Map<number, CategoryHead>();
+  glPrefs.availableHeads.forEach(h => headMap.set(h.id, h));
+
+  for (const hId of glPrefs.selectedHeadIds) {
+    const head = headMap.get(hId);
+    if (head && !categoriesByGroup[head.name]) {
+      categoriesByGroup[head.name] = [];
+    }
+  }
+
+  // Populate rows into categoriesByGroup
   for (const row of categoryRowsMap.values()) {
-    const grp = row.category.group_name || 'Other';
+    const head = row.category.head_id ? headMap.get(row.category.head_id) : undefined;
+    const grp = head ? head.name : (row.category.group_name || 'Other');
     if (!categoriesByGroup[grp]) {
       categoriesByGroup[grp] = [];
     }
     categoriesByGroup[grp].push(row);
+  }
+
+  // Prune any empty initialized groups
+  for (const grp of Object.keys(categoriesByGroup)) {
+    if (categoriesByGroup[grp].length === 0) {
+      delete categoriesByGroup[grp];
+    }
   }
 
   return {
@@ -757,17 +1223,21 @@ export function getMonthlyWorksheetData(bookId: number, year: number, month: num
       startingCash: startingCashOfMonth,
       endingCash: currentCash,
     },
+    hasSavedGlPreferences: glPrefs.hasSavedPreferences,
+    activeHeadCount: Object.keys(categoriesByGroup).length,
+    totalAvailableHeads: glPrefs.availableHeads.length,
+    activeHeadIds: glPrefs.selectedHeadIds,
   };
 }
 
 // --- Consolidated Master Book Data Engine ---
-export function getConsolidatedMasterBookData(year: number, month: number): ConsolidatedMasterBookData {
+export function getConsolidatedMasterBookData(year: number, month: number, userId?: number): ConsolidatedMasterBookData {
   const db = getDb();
   const masterCurrency = getMasterCurrency();
   const monthStr = `${year}-${String(month).padStart(2, '0')}`;
   const monthName = getMonthName(month);
 
-  const books = getAccountBooks();
+  const books = getAccountBooks(userId);
   const bookSummaries: ConsolidatedMasterBookData['books'] = [];
 
   let grandTotalMaster = 0;
@@ -792,7 +1262,17 @@ export function getConsolidatedMasterBookData(year: number, month: number): Cons
   }
 
   // Category totals across all books in master currency
-  const catRows = db.prepare(`
+  const catRows = userId ? (db.prepare(`
+    SELECT 
+      c.id, c.name, c.group_name, c.icon, c.color, c.sort_order,
+      COALESCE(SUM(t.amount_master_currency), 0) as total_master
+    FROM categories c
+    LEFT JOIN transactions t ON c.id = t.category_id AND t.date LIKE ? AND t.type = 'expense' AND t.book_id IN (SELECT id FROM account_books WHERE user_id = ?)
+    WHERE (c.user_id = ? OR c.user_id IS NULL)
+    GROUP BY c.id
+    ORDER BY total_master DESC
+  `).all(`${monthStr}%`, userId, userId) as unknown as (Category & { total_master: number })[])
+  : (db.prepare(`
     SELECT 
       c.id, c.name, c.group_name, c.icon, c.color, c.sort_order,
       COALESCE(SUM(t.amount_master_currency), 0) as total_master
@@ -800,7 +1280,7 @@ export function getConsolidatedMasterBookData(year: number, month: number): Cons
     LEFT JOIN transactions t ON c.id = t.category_id AND t.date LIKE ? AND t.type = 'expense'
     GROUP BY c.id
     ORDER BY total_master DESC
-  `).all(`${monthStr}%`) as unknown as (Category & { total_master: number })[];
+  `).all(`${monthStr}%`) as unknown as (Category & { total_master: number })[]);
 
   const categoryTotals = catRows.map(r => ({
     category: {
@@ -820,11 +1300,16 @@ export function getConsolidatedMasterBookData(year: number, month: number): Cons
   const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   for (let m = 1; m <= 12; m++) {
     const mPrefix = `${year}-${String(m).padStart(2, '0')}%`;
-    const mTotal = db.prepare(`
+    const mTotal = userId ? (db.prepare(`
+      SELECT COALESCE(SUM(amount_master_currency), 0) as total
+      FROM transactions
+      WHERE date LIKE ? AND type = 'expense' AND book_id IN (SELECT id FROM account_books WHERE user_id = ?)
+    `).get(mPrefix, userId) as { total: number })
+    : (db.prepare(`
       SELECT COALESCE(SUM(amount_master_currency), 0) as total
       FROM transactions
       WHERE date LIKE ? AND type = 'expense'
-    `).get(mPrefix) as { total: number };
+    `).get(mPrefix) as { total: number });
 
     monthlyTrend.push({
       monthStr: monthNames[m - 1],
@@ -853,22 +1338,31 @@ export function getExpenseDashboardData(params: {
   year?: number;
   month?: number;
   period?: 'month' | 'year' | 'all';
+  userId?: number;
 }): ExpenseDashboardData {
   const db = getDb();
   const masterCurrency = getMasterCurrency();
-  const books = getAccountBooks();
+  const books = getAccountBooks(params.userId);
 
   const isConsolidated = params.bookId === 'all';
   const selectedBookId = isConsolidated ? null : (params.bookId || books[0]?.id || 1);
   const activeBook = !isConsolidated ? (books.find(b => b.id === selectedBookId) || books[0]) : null;
 
   // Determine available years from database
-  const yrRows = db.prepare(`
-    SELECT DISTINCT CAST(substr(date, 1, 4) AS INTEGER) as yr
-    FROM transactions
-    WHERE type = 'expense'
-    ORDER BY yr DESC
-  `).all() as { yr: number }[];
+  const yrRows = params.userId
+    ? (db.prepare(`
+        SELECT DISTINCT CAST(substr(t.date, 1, 4) AS INTEGER) as yr
+        FROM transactions t
+        JOIN account_books b ON t.book_id = b.id
+        WHERE t.type = 'expense' AND b.user_id = ?
+        ORDER BY yr DESC
+      `).all(params.userId) as { yr: number }[])
+    : (db.prepare(`
+        SELECT DISTINCT CAST(substr(date, 1, 4) AS INTEGER) as yr
+        FROM transactions
+        WHERE type = 'expense'
+        ORDER BY yr DESC
+      `).all() as { yr: number }[]);
 
   const availableYears = yrRows.length > 0 ? yrRows.map(r => r.yr) : [2015, new Date().getFullYear()];
 
@@ -903,6 +1397,9 @@ export function getExpenseDashboardData(params: {
   if (!isConsolidated && selectedBookId) {
     bookFilterSql = 'AND t.book_id = ?';
     baseParams.push(selectedBookId);
+  } else if (params.userId) {
+    bookFilterSql = 'AND t.book_id IN (SELECT id FROM account_books WHERE user_id = ?)';
+    baseParams.push(params.userId);
   }
 
   // Current period date filter

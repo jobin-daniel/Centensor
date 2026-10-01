@@ -11,15 +11,19 @@ import {
   resetCategoriesToDefault,
   setCategoryBudget,
 } from '@/lib/db/queries';
+import { requireAuth } from '@/lib/auth-helper';
 
 export async function GET(request: Request) {
   try {
+    const { user, errorResponse } = await requireAuth();
+    if (errorResponse) return errorResponse;
+
     const { searchParams } = new URL(request.url);
     const bookId = searchParams.get('bookId') ? parseInt(searchParams.get('bookId')!, 10) : undefined;
     const month = searchParams.get('month') || undefined;
 
-    const categories = getCategories(bookId, month);
-    const heads = getCategoryHeads();
+    const categories = getCategories(bookId, month, user!.id);
+    const heads = getCategoryHeads(user!.id);
 
     return NextResponse.json({ success: true, categories, heads });
   } catch (error) {
@@ -29,17 +33,20 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    const { user, errorResponse } = await requireAuth();
+    if (errorResponse) return errorResponse;
+
     const body = await request.json();
     const { action } = body;
 
-    // Reset all heads and subheads to the recommended taxonomy
+    // Reset all heads and subheads to the recommended taxonomy for this user
     if (action === 'reset_defaults') {
-      resetCategoriesToDefault();
+      resetCategoriesToDefault(user!.id);
       return NextResponse.json({
         success: true,
         message: 'Successfully reset categories to recommended template',
-        heads: getCategoryHeads(),
-        categories: getCategories(),
+        heads: getCategoryHeads(user!.id),
+        categories: getCategories(undefined, undefined, user!.id),
       });
     }
 
@@ -63,6 +70,7 @@ export async function POST(request: Request) {
         return NextResponse.json({ success: false, error: 'Main Head name is required' }, { status: 400 });
       }
       const head = createCategoryHead({
+        user_id: user!.id,
         name,
         icon,
         color,
@@ -78,6 +86,7 @@ export async function POST(request: Request) {
     }
 
     const category = createCategory({
+      user_id: user!.id,
       head_id: head_id ? Number(head_id) : null,
       name,
       group_name,
@@ -95,6 +104,9 @@ export async function POST(request: Request) {
 
 export async function PUT(request: Request) {
   try {
+    const { errorResponse } = await requireAuth();
+    if (errorResponse) return errorResponse;
+
     const body = await request.json();
     const { action, id } = body;
 
@@ -136,6 +148,9 @@ export async function PUT(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
+    const { errorResponse } = await requireAuth();
+    if (errorResponse) return errorResponse;
+
     const { searchParams } = new URL(request.url);
     const id = searchParams.get('id');
     const type = searchParams.get('type') || 'subhead'; // 'head' or 'subhead'

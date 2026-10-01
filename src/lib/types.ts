@@ -9,8 +9,17 @@ export interface Currency {
   is_master_base: number; // 1 if this is the primary consolidated reporting currency
 }
 
+export interface UserProfile {
+  id: number;
+  name: string;
+  email: string;
+  image?: string | null;
+  tier?: string;
+}
+
 export interface AccountBook {
   id: number;
+  user_id?: number;
   name: string; // e.g. "Home Land (India)", "UAE Expenses", "US Travel"
   currency_code: CurrencyCode;
   currency_symbol?: string;
@@ -51,6 +60,7 @@ export interface Account {
 
 export interface CategoryHead {
   id: number;
+  user_id?: number;
   name: string; // e.g. "🍔 Food / Eating out", "🚗 Car / Transport", "🏠 House"
   icon?: string; // Emoji e.g. "🍔" or Lucide icon name
   color?: string; // Hex color code
@@ -61,6 +71,7 @@ export interface CategoryHead {
 
 export interface Category {
   id: number;
+  user_id?: number;
   head_id?: number | null; // Foreign key to CategoryHead
   head_name?: string; // Main Head name
   head_icon?: string; // Main Head emoji / icon
@@ -160,6 +171,20 @@ export interface DailySummary {
   isWeekend: boolean;
 }
 
+export interface MonthlyGlPreferences {
+  bookId: number;
+  month: string; // 'YYYY-MM'
+  hasSavedPreferences: boolean;
+  selectedHeadIds: number[];
+  selectedCategoryIds: number[];
+  headsWithTransactions: number[];
+  categoriesWithTransactions: number[];
+  transactionCountsByHead: Record<number, number>;
+  transactionCountsByCategory: Record<number, number>;
+  availableHeads: CategoryHead[];
+  previousMonth: { month: string; headIds: number[]; count: number } | null;
+}
+
 export interface MonthlyWorksheetData {
   year: number;
   month: number; // 1 to 12
@@ -178,6 +203,10 @@ export interface MonthlyWorksheetData {
     startingCash: number;
     endingCash: number;
   };
+  hasSavedGlPreferences?: boolean;
+  activeHeadCount?: number;
+  totalAvailableHeads?: number;
+  activeHeadIds?: number[];
 }
 
 export interface ConsolidatedMasterBookData {

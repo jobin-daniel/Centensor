@@ -1,5 +1,17 @@
 -- Centensor SQLite Schema
 
+-- 0. Users & Tenants
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    email TEXT UNIQUE NOT NULL COLLATE NOCASE,
+    password_hash TEXT,
+    image TEXT,
+    tier TEXT DEFAULT 'pro',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 -- 1. Currencies & Exchange Rates
 CREATE TABLE IF NOT EXISTS currencies (
     code TEXT PRIMARY KEY,
@@ -13,6 +25,7 @@ CREATE TABLE IF NOT EXISTS currencies (
 -- 2. Account Books (e.g. Home Land [India], UAE Expenses, US Travel)
 CREATE TABLE IF NOT EXISTS account_books (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     currency_code TEXT NOT NULL REFERENCES currencies(code),
     description TEXT,
@@ -48,7 +61,8 @@ CREATE TABLE IF NOT EXISTS accounts (
 -- 4.5. Main Heads (General Ledger Categories Groups / Macro Heads)
 CREATE TABLE IF NOT EXISTS category_heads (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
     icon TEXT,
     color TEXT,
     sort_order INTEGER DEFAULT 0
@@ -57,6 +71,7 @@ CREATE TABLE IF NOT EXISTS category_heads (
 -- 5. Sub Heads (General Ledger Specific Categories)
 CREATE TABLE IF NOT EXISTS categories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
     head_id INTEGER REFERENCES category_heads(id) ON DELETE SET NULL,
     name TEXT NOT NULL,
     group_name TEXT NOT NULL,
@@ -106,8 +121,36 @@ CREATE TABLE IF NOT EXISTS daily_reconciliations (
     UNIQUE(book_id, date)
 );
 
+-- 9. Monthly Worksheet User Preferences (Tailored GL Heads in use per user/book/month)
+CREATE TABLE IF NOT EXISTS monthly_worksheet_heads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    book_id INTEGER NOT NULL REFERENCES account_books(id) ON DELETE CASCADE,
+    month TEXT NOT NULL, -- 'YYYY-MM'
+    head_id INTEGER NOT NULL REFERENCES category_heads(id) ON DELETE CASCADE,
+    sort_order INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, book_id, month, head_id)
+);
+
+CREATE TABLE IF NOT EXISTS monthly_worksheet_categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    book_id INTEGER NOT NULL REFERENCES account_books(id) ON DELETE CASCADE,
+    month TEXT NOT NULL, -- 'YYYY-MM'
+    category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, book_id, month, category_id)
+);
+
 -- Indices for rapid querying
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_books_user ON account_books(user_id);
+CREATE INDEX IF NOT EXISTS idx_catheads_user ON category_heads(user_id);
+CREATE INDEX IF NOT EXISTS idx_cats_user ON categories(user_id);
 CREATE INDEX IF NOT EXISTS idx_tx_book_date ON transactions(book_id, date);
 CREATE INDEX IF NOT EXISTS idx_tx_category ON transactions(category_id);
 CREATE INDEX IF NOT EXISTS idx_tx_account ON transactions(account_id);
 CREATE INDEX IF NOT EXISTS idx_budgets_book_month ON budgets(book_id, month);
+CREATE INDEX IF NOT EXISTS idx_monthly_ws_heads ON monthly_worksheet_heads(user_id, book_id, month);
+CREATE INDEX IF NOT EXISTS idx_monthly_ws_cats ON monthly_worksheet_categories(user_id, book_id, month);

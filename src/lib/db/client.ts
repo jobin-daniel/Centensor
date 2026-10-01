@@ -1,7 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import { DatabaseSync } from 'node:sqlite';
-import { SEED_CURRENCIES, SEED_BOOKS, SEED_INSTITUTIONS, SEED_CATEGORIES, SEED_CATEGORY_HEADS } from './seeds';
+import bcrypt from 'bcryptjs';
+import { SEED_CURRENCIES, SEED_INSTITUTIONS } from './seeds';
 
 let dbInstance: DatabaseSync | null = null;
 
@@ -24,6 +25,9 @@ export function getDb(): DatabaseSync {
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec('PRAGMA foreign_keys = ON;');
 
+  // Ensure migrations for multi-tenant SaaS
+  runTenantMigrations(db);
+
   // Initialize schema
   const schemaPath = path.join(process.cwd(), 'src', 'lib', 'db', 'schema.sql');
   if (fs.existsSync(schemaPath)) {
@@ -31,33 +35,102 @@ export function getDb(): DatabaseSync {
     db.exec(schemaSql);
   }
 
-  // Ensure category_heads and categories migration
-  try {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS category_heads (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL UNIQUE,
-        icon TEXT,
-        color TEXT,
-        sort_order INTEGER DEFAULT 0
-      );
-    `);
-    const catCols = db.prepare("PRAGMA table_info(categories)").all() as { name: string }[];
-    if (!catCols.some((c) => c.name === 'head_id')) {
-      db.exec("ALTER TABLE categories ADD COLUMN head_id INTEGER REFERENCES category_heads(id) ON DELETE SET NULL;");
-    }
-  } catch (e) {
-    console.error('Migration error:', e);
-  }
-
-  // Seed default data if empty
-  seedInitialData(db);
+  // Seed shared master data (currencies, institutions)
+  seedMasterData(db);
 
   dbInstance = db;
   return dbInstance;
 }
 
-function seedInitialData(db: DatabaseSync) {
+function runTenantMigrations(db: DatabaseSync) {
+  try {
+    // 1. Ensure users table exists
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        email TEXT UNIQUE NOT NULL COLLATE NOCASE,
+        password_hash TEXT,
+        image TEXT,
+        tier TEXT DEFAULT 'pro',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // 2. Check and add user_id to account_books
+    const bookCols = db.prepare("PRAGMA table_info(account_books)").all() as { name: string }[];
+    if (!bookCols.some((c) => c.name === 'user_id')) {
+      db.exec("ALTER TABLE account_books ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;");
+    }
+
+    // 3. Check and add user_id to category_heads
+    const headCols = db.prepare("PRAGMA table_info(category_heads)").all() as { name: string }[];
+    if (!headCols.some((c) => c.name === 'user_id')) {
+      db.exec("ALTER TABLE category_heads ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;");
+    }
+
+    // 4. Check and add user_id to categories
+    const catCols = db.prepare("PRAGMA table_info(categories)").all() as { name: string }[];
+    if (!catCols.some((c) => c.name === 'user_id')) {
+      db.exec("ALTER TABLE categories ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;");
+    }
+    if (!catCols.some((c) => c.name === 'head_id')) {
+      db.exec("ALTER TABLE categories ADD COLUMN head_id INTEGER REFERENCES category_heads(id) ON DELETE SET NULL;");
+    }
+
+    // 5. Seed default demo user if no users exist
+    const userCount = (db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number })?.count ?? 0;
+    let defaultUserId: number = 1;
+    if (userCount === 0) {
+      const demoHash = bcrypt.hashSync('Password123!', 10);
+      const res = db.prepare(`
+        INSERT INTO users (name, email, password_hash, tier)
+        VALUES (?, ?, ?, 'pro')
+      `).run('Demo Admin', 'demo@centensor.com', demoHash);
+      defaultUserId = Number(res.lastInsertRowid);
+    } else {
+      const firstUser = db.prepare('SELECT id FROM users ORDER BY id ASC LIMIT 1').get() as { id: number };
+      defaultUserId = firstUser.id;
+    }
+
+    // Link any orphaned account_books / categories to default user
+    db.prepare('UPDATE account_books SET user_id = ? WHERE user_id IS NULL').run(defaultUserId);
+    db.prepare('UPDATE category_heads SET user_id = ? WHERE user_id IS NULL').run(defaultUserId);
+    db.prepare('UPDATE categories SET user_id = ? WHERE user_id IS NULL').run(defaultUserId);
+
+    // 6. Ensure monthly_worksheet_heads and monthly_worksheet_categories tables exist
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS monthly_worksheet_heads (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        book_id INTEGER NOT NULL REFERENCES account_books(id) ON DELETE CASCADE,
+        month TEXT NOT NULL,
+        head_id INTEGER NOT NULL REFERENCES category_heads(id) ON DELETE CASCADE,
+        sort_order INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, book_id, month, head_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS monthly_worksheet_categories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        book_id INTEGER NOT NULL REFERENCES account_books(id) ON DELETE CASCADE,
+        month TEXT NOT NULL,
+        category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, book_id, month, category_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_monthly_ws_heads ON monthly_worksheet_heads(user_id, book_id, month);
+      CREATE INDEX IF NOT EXISTS idx_monthly_ws_cats ON monthly_worksheet_categories(user_id, book_id, month);
+    `);
+  } catch (e) {
+    console.error('Tenant migration error:', e);
+  }
+}
+
+function seedMasterData(db: DatabaseSync) {
   // Check if currencies exist
   const currCount = (db.prepare('SELECT COUNT(*) as count FROM currencies').get() as { count: number })?.count ?? 0;
   if (currCount === 0) {
@@ -70,18 +143,6 @@ function seedInitialData(db: DatabaseSync) {
     }
   }
 
-  // Check if books exist
-  const bookCount = (db.prepare('SELECT COUNT(*) as count FROM account_books').get() as { count: number })?.count ?? 0;
-  if (bookCount === 0) {
-    const insertBook = db.prepare(`
-      INSERT INTO account_books (name, currency_code, description, is_default, sort_order)
-      VALUES (?, ?, ?, ?, ?)
-    `);
-    for (const b of SEED_BOOKS) {
-      insertBook.run(b.name, b.currency_code, b.description, b.is_default, b.sort_order);
-    }
-  }
-
   // Check if institutions exist
   const instCount = (db.prepare('SELECT COUNT(*) as count FROM institutions').get() as { count: number })?.count ?? 0;
   if (instCount === 0) {
@@ -91,86 +152,6 @@ function seedInitialData(db: DatabaseSync) {
     `);
     for (const inst of SEED_INSTITUTIONS) {
       insertInst.run(inst.name, inst.country_code, inst.institution_type);
-    }
-  }
-
-  // Check if accounts exist
-  const accCount = (db.prepare('SELECT COUNT(*) as count FROM accounts').get() as { count: number })?.count ?? 0;
-  if (accCount === 0) {
-    const books = db.prepare('SELECT id, name, currency_code FROM account_books').all() as { id: number; name: string; currency_code: string }[];
-    const insts = db.prepare('SELECT id, name FROM institutions').all() as { id: number; name: string }[];
-    
-    const hdfc = insts.find(i => i.name.includes('HDFC'))?.id ?? null;
-    const sbi = insts.find(i => i.name.includes('State Bank'))?.id ?? null;
-    const enbd = insts.find(i => i.name.includes('Emirates NBD'))?.id ?? null;
-    const chase = insts.find(i => i.name.includes('Chase'))?.id ?? null;
-
-    const homeBook = books.find(b => b.name.includes('Home Land'))?.id;
-    const uaeBook = books.find(b => b.name.includes('UAE'))?.id;
-    const usBook = books.find(b => b.name.includes('US'))?.id;
-
-    const insertAcc = db.prepare(`
-      INSERT INTO accounts (book_id, institution_id, name, type, currency_code, account_number_last4, opening_balance, current_balance, credit_limit, billing_cycle_day)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    if (homeBook) {
-      insertAcc.run(homeBook, null, 'Cash in Hand (INR)', 'cash', 'INR', null, 5000, 5000, 0, null);
-      insertAcc.run(homeBook, hdfc, 'HDFC Bank Savings', 'bank', 'INR', '4821', 50000, 50000, 0, null);
-      insertAcc.run(homeBook, sbi, 'SBI Account', 'bank', 'INR', '1092', 25000, 25000, 0, null);
-      insertAcc.run(homeBook, hdfc, 'HDFC Credit Card', 'credit_card', 'INR', '8812', 0, 0, 150000, 15);
-    }
-
-    if (uaeBook) {
-      insertAcc.run(uaeBook, null, 'Cash in Hand (AED)', 'cash', 'AED', null, 1000, 1000, 0, null);
-      insertAcc.run(uaeBook, enbd, 'Emirates NBD Current', 'bank', 'AED', '7731', 12000, 12000, 0, null);
-      insertAcc.run(uaeBook, enbd, 'ENBD Credit Card', 'credit_card', 'AED', '3304', 0, 0, 25000, 1);
-    }
-
-    if (usBook) {
-      insertAcc.run(usBook, null, 'Cash in Hand (USD)', 'cash', 'USD', null, 500, 500, 0, null);
-      insertAcc.run(usBook, chase, 'Chase Sapphire Card', 'credit_card', 'USD', '9120', 0, 0, 8000, 20);
-    }
-  }
-
-  // Check if category heads & categories exist
-  const headCount = (db.prepare('SELECT COUNT(*) as count FROM category_heads').get() as { count: number })?.count ?? 0;
-  const txCount = (db.prepare('SELECT COUNT(*) as count FROM transactions').get() as { count: number })?.count ?? 0;
-
-  if (headCount === 0) {
-    if (txCount === 0) {
-      // Safe to replace placeholder categories with the recommended Main Heads and Sub Heads
-      db.prepare('DELETE FROM categories').run();
-      db.prepare('DELETE FROM category_heads').run();
-
-      const insertHead = db.prepare(`
-        INSERT INTO category_heads (name, icon, color, sort_order)
-        VALUES (?, ?, ?, ?)
-      `);
-      const insertSub = db.prepare(`
-        INSERT INTO categories (head_id, name, group_name, icon, color, sort_order)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `);
-
-      for (const head of SEED_CATEGORY_HEADS) {
-        const res = insertHead.run(head.name, head.icon, head.color, head.sort_order);
-        const headId = Number(res.lastInsertRowid);
-        for (const sub of head.sub_heads) {
-          insertSub.run(headId, sub.name, head.name, sub.icon || head.icon, sub.color || head.color, sub.sort_order);
-        }
-      }
-    } else {
-      // If transactions exist, migrate existing groups into category_heads
-      const distinctGroups = db.prepare('SELECT DISTINCT group_name FROM categories WHERE group_name IS NOT NULL').all() as { group_name: string }[];
-      const insertHead = db.prepare('INSERT OR IGNORE INTO category_heads (name, icon, color, sort_order) VALUES (?, ?, ?, ?)');
-      let order = 1;
-      for (const g of distinctGroups) {
-        insertHead.run(g.group_name, '📁', '#6366F1', order++);
-        const headRow = db.prepare('SELECT id FROM category_heads WHERE name = ?').get(g.group_name) as { id: number } | undefined;
-        if (headRow) {
-          db.prepare('UPDATE categories SET head_id = ? WHERE group_name = ?').run(headRow.id, g.group_name);
-        }
-      }
     }
   }
 }

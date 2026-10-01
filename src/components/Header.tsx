@@ -13,7 +13,10 @@ import {
   Calendar,
   Building,
   Sparkles,
+  LogOut,
+  User,
 } from 'lucide-react';
+import { useSession, signOut } from 'next-auth/react';
 import { AccountBook } from '@/lib/types';
 import { getMonthName } from '@/lib/formatters';
 
@@ -36,7 +39,9 @@ export default function Header({
   onMonthChange,
   onOpenNewTxModal,
 }: HeaderProps) {
+  const { data: session } = useSession();
   const [isBookMenuOpen, setIsBookMenuOpen] = useState(false);
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
 
   const activeBook = books.find((b) => b.id === activeBookId) || books[0];
@@ -101,11 +106,11 @@ export default function Header({
                 textTransform: 'uppercase',
               }}
             >
-              NEU
+              PRO
             </span>
           </div>
 
-          {/* Book Switcher Dropdown - Tata Neu Pass Style */}
+          {/* Book Switcher Dropdown */}
           <div style={{ position: 'relative' }}>
             <button
               className="book-switcher-btn"
@@ -225,7 +230,7 @@ export default function Header({
           </button>
         </div>
 
-        {/* Actions: New Transaction + Theme Toggle */}
+        {/* Actions: New Transaction + Theme Toggle + User Profile */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <button className="btn btn-primary" onClick={onOpenNewTxModal}>
             <Plus size={16} />
@@ -245,6 +250,127 @@ export default function Header({
           >
             {theme === 'dark' ? <Sun size={17} color="#fbbf24" /> : <Moon size={17} color="#6366f1" />}
           </button>
+
+          {/* User Account Menu */}
+          {session?.user && (
+            <div style={{ position: 'relative' }}>
+              <button
+                onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  padding: '4px 10px 4px 6px',
+                  borderRadius: '999px',
+                  background: 'var(--bg-surface-elevated)',
+                  border: '1px solid var(--border-subtle)',
+                  cursor: 'pointer',
+                  color: 'var(--text-primary)',
+                  transition: 'all 0.15s ease',
+                }}
+                title="User Profile & Settings"
+              >
+                <div
+                  style={{
+                    width: '28px',
+                    height: '28px',
+                    borderRadius: '50%',
+                    background: 'linear-gradient(135deg, #ec4899, #8b5cf6)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: '#ffffff',
+                    fontWeight: 700,
+                    fontSize: '12px',
+                    boxShadow: '0 2px 8px rgba(139, 92, 246, 0.3)',
+                  }}
+                >
+                  {session.user.name ? session.user.name.charAt(0).toUpperCase() : 'U'}
+                </div>
+                <span
+                  style={{
+                    fontSize: '13px',
+                    fontWeight: 600,
+                    maxWidth: '120px',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {session.user.name || session.user.email}
+                </span>
+                <ChevronDown size={14} style={{ color: 'var(--text-muted)' }} />
+              </button>
+
+              {isUserMenuOpen && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: '100%',
+                    right: 0,
+                    marginTop: '8px',
+                    background: 'var(--bg-surface)',
+                    border: '1px solid rgba(139, 92, 246, 0.3)',
+                    borderRadius: 'var(--radius-lg)',
+                    boxShadow: '0 20px 40px -6px rgba(0, 0, 0, 0.8), 0 0 20px rgba(139, 92, 246, 0.15)',
+                    zIndex: 70,
+                    minWidth: '220px',
+                    overflow: 'hidden',
+                    backdropFilter: 'blur(16px)',
+                  }}
+                >
+                  <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
+                    <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)' }}>
+                      {session.user.name || 'Tenant User'}
+                    </div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px', wordBreak: 'break-all' }}>
+                      {session.user.email}
+                    </div>
+                    <div style={{ marginTop: '8px' }}>
+                      <span
+                        style={{
+                          fontSize: '9px',
+                          fontWeight: 800,
+                          letterSpacing: '0.06em',
+                          padding: '2px 6px',
+                          borderRadius: '999px',
+                          background: 'rgba(16, 185, 129, 0.15)',
+                          border: '1px solid rgba(16, 185, 129, 0.3)',
+                          color: '#34d399',
+                          textTransform: 'uppercase',
+                        }}
+                      >
+                        PRO PLAN • TENANT ACTIVE
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => signOut({ callbackUrl: '/login' })}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '10px',
+                      width: '100%',
+                      padding: '12px 16px',
+                      background: 'transparent',
+                      border: 'none',
+                      color: '#f87171',
+                      fontSize: '13px',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                      transition: 'background 0.15s ease',
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                  >
+                    <LogOut size={16} />
+                    <span>Sign Out</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </header>
