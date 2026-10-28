@@ -18,7 +18,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: false, error: 'Password must be at least 6 characters long.' }, { status: 400 });
     }
 
-    const existing = getUserByEmail(email);
+    const existing = await getUserByEmail(email);
     if (existing) {
       return NextResponse.json(
         { success: false, error: 'An account with this email address already exists.' },

@@ -1,5 +1,5 @@
 import bcrypt from 'bcryptjs';
-import { getDb } from './client';
+import { getAsyncDb } from './client';
 import { SEED_BOOKS, SEED_CATEGORY_HEADS } from './seeds';
 
 export interface DbUser {
@@ -13,20 +13,20 @@ export interface DbUser {
   updated_at?: string;
 }
 
-export function getUserByEmail(email: string): DbUser | null {
-  const db = getDb();
-  const row = db.prepare('SELECT * FROM users WHERE LOWER(email) = LOWER(?)').get(email.trim()) as DbUser | undefined;
+export async function getUserByEmail(email: string): Promise<DbUser | null> {
+  const db = getAsyncDb();
+  const row = await db.get<DbUser>('SELECT * FROM users WHERE LOWER(email) = LOWER(?)', email.trim());
   return row || null;
 }
 
-export function getUserById(id: number): DbUser | null {
-  const db = getDb();
-  const row = db.prepare('SELECT id, name, email, image, tier, created_at, updated_at FROM users WHERE id = ?').get(id) as DbUser | undefined;
+export async function getUserById(id: number): Promise<DbUser | null> {
+  const db = getAsyncDb();
+  const row = await db.get<DbUser>('SELECT id, name, email, image, tier, created_at, updated_at FROM users WHERE id = ?', id);
   return row || null;
 }
 
 export async function verifyUserPassword(email: string, passwordPlain: string): Promise<DbUser | null> {
-  const user = getUserByEmail(email);
+  const user = await getUserByEmail(email);
   if (!user || !user.password_hash) {
     return null;
   }
@@ -52,10 +52,10 @@ export async function createUser(data: {
   password?: string;
   image?: string;
 }): Promise<DbUser> {
-  const db = getDb();
+  const db = getAsyncDb();
   const emailNorm = data.email.trim().toLowerCase();
 
-  const existing = getUserByEmail(emailNorm);
+  const existing = await getUserByEmail(emailNorm);
   if (existing) {
     throw new Error('An account with this email address already exists.');
   }
@@ -65,37 +65,33 @@ export async function createUser(data: {
     passwordHash = await bcrypt.hash(data.password, 10);
   }
 
-  const insert = db.prepare(`
+  const res = await db.run(`
     INSERT INTO users (name, email, password_hash, image, tier)
     VALUES (?, ?, ?, ?, 'pro')
-  `);
-
-  const res = insert.run(data.name.trim(), emailNorm, passwordHash, data.image || null);
+  `, data.name.trim(), emailNorm, passwordHash, data.image || null);
   const userId = Number(res.lastInsertRowid);
 
   // Initialize isolated workspace data for this new tenant
-  seedUserWorkspace(userId);
+  await seedUserWorkspace(userId);
 
-  return getUserById(userId)!;
+  return (await getUserById(userId))!;
 }
 
-export function seedUserWorkspace(userId: number): void {
-  const db = getDb();
+export async function seedUserWorkspace(userId: number): Promise<void> {
+  const db = getAsyncDb();
 
   // 1. Seed Books for User
-  const insertBook = db.prepare(`
-    INSERT INTO account_books (user_id, name, currency_code, description, is_default, sort_order)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `);
-
   const bookIds: { [name: string]: number } = {};
   for (const b of SEED_BOOKS) {
-    const res = insertBook.run(userId, b.name, b.currency_code, b.description, b.is_default, b.sort_order);
+    const res = await db.run(`
+      INSERT INTO account_books (user_id, name, currency_code, description, is_default, sort_order)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `, userId, b.name, b.currency_code, b.description, b.is_default, b.sort_order);
     bookIds[b.name] = Number(res.lastInsertRowid);
   }
 
   // 2. Fetch institutions for mapping
-  const insts = db.prepare('SELECT id, name FROM institutions').all() as { id: number; name: string }[];
+  const insts = await db.all<{ id: number; name: string }>('SELECT id, name FROM institutions');
   const hdfc = insts.find((i) => i.name.includes('HDFC'))?.id ?? null;
   const sbi = insts.find((i) => i.name.includes('State Bank'))?.id ?? null;
   const enbd = insts.find((i) => i.name.includes('Emirates NBD'))?.id ?? null;
@@ -105,45 +101,36 @@ export function seedUserWorkspace(userId: number): void {
   const uaeBookId = bookIds['UAE Expenses'];
   const usBookId = bookIds['US Travel'];
 
-  const insertAcc = db.prepare(`
-    INSERT INTO accounts (book_id, institution_id, name, type, currency_code, account_number_last4, opening_balance, current_balance, credit_limit, billing_cycle_day)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
   if (homeBookId) {
-    insertAcc.run(homeBookId, null, 'Cash in Hand (INR)', 'cash', 'INR', null, 5000, 5000, 0, null);
-    insertAcc.run(homeBookId, hdfc, 'HDFC Bank Savings', 'bank', 'INR', '4821', 50000, 50000, 0, null);
-    insertAcc.run(homeBookId, sbi, 'SBI Account', 'bank', 'INR', '1092', 25000, 25000, 0, null);
-    insertAcc.run(homeBookId, hdfc, 'HDFC Credit Card', 'credit_card', 'INR', '8812', 0, 0, 150000, 15);
+    await db.run('INSERT INTO accounts (book_id, institution_id, name, type, currency_code, account_number_last4, opening_balance, current_balance, credit_limit, billing_cycle_day) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', homeBookId, null, 'Cash in Hand (INR)', 'cash', 'INR', null, 5000, 5000, 0, null);
+    await db.run('INSERT INTO accounts (book_id, institution_id, name, type, currency_code, account_number_last4, opening_balance, current_balance, credit_limit, billing_cycle_day) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', homeBookId, hdfc, 'HDFC Bank Savings', 'bank', 'INR', '4821', 50000, 50000, 0, null);
+    await db.run('INSERT INTO accounts (book_id, institution_id, name, type, currency_code, account_number_last4, opening_balance, current_balance, credit_limit, billing_cycle_day) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', homeBookId, sbi, 'SBI Account', 'bank', 'INR', '1092', 25000, 25000, 0, null);
+    await db.run('INSERT INTO accounts (book_id, institution_id, name, type, currency_code, account_number_last4, opening_balance, current_balance, credit_limit, billing_cycle_day) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', homeBookId, hdfc, 'HDFC Credit Card', 'credit_card', 'INR', '8812', 0, 0, 150000, 15);
   }
 
   if (uaeBookId) {
-    insertAcc.run(uaeBookId, null, 'Cash in Hand (AED)', 'cash', 'AED', null, 1000, 1000, 0, null);
-    insertAcc.run(uaeBookId, enbd, 'Emirates NBD Current', 'bank', 'AED', '7731', 12000, 12000, 0, null);
-    insertAcc.run(uaeBookId, enbd, 'ENBD Credit Card', 'credit_card', 'AED', '3304', 0, 0, 25000, 1);
+    await db.run('INSERT INTO accounts (book_id, institution_id, name, type, currency_code, account_number_last4, opening_balance, current_balance, credit_limit, billing_cycle_day) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', uaeBookId, null, 'Cash in Hand (AED)', 'cash', 'AED', null, 1000, 1000, 0, null);
+    await db.run('INSERT INTO accounts (book_id, institution_id, name, type, currency_code, account_number_last4, opening_balance, current_balance, credit_limit, billing_cycle_day) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', uaeBookId, enbd, 'Emirates NBD Current', 'bank', 'AED', '7731', 12000, 12000, 0, null);
+    await db.run('INSERT INTO accounts (book_id, institution_id, name, type, currency_code, account_number_last4, opening_balance, current_balance, credit_limit, billing_cycle_day) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', uaeBookId, enbd, 'ENBD Credit Card', 'credit_card', 'AED', '3304', 0, 0, 25000, 1);
   }
 
   if (usBookId) {
-    insertAcc.run(usBookId, null, 'Cash in Hand (USD)', 'cash', 'USD', null, 500, 500, 0, null);
-    insertAcc.run(usBookId, chase, 'Chase Sapphire Card', 'credit_card', 'USD', '9120', 0, 0, 8000, 20);
+    await db.run('INSERT INTO accounts (book_id, institution_id, name, type, currency_code, account_number_last4, opening_balance, current_balance, credit_limit, billing_cycle_day) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', usBookId, null, 'Cash in Hand (USD)', 'cash', 'USD', null, 500, 500, 0, null);
+    await db.run('INSERT INTO accounts (book_id, institution_id, name, type, currency_code, account_number_last4, opening_balance, current_balance, credit_limit, billing_cycle_day) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', usBookId, chase, 'Chase Sapphire Card', 'credit_card', 'USD', '9120', 0, 0, 8000, 20);
   }
 
   // 3. Seed Category Heads & Categories for this user
-  const insertHead = db.prepare(`
-    INSERT INTO category_heads (user_id, name, icon, color, sort_order)
-    VALUES (?, ?, ?, ?, ?)
-  `);
-
-  const insertSub = db.prepare(`
-    INSERT INTO categories (user_id, head_id, name, group_name, icon, color, sort_order)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `);
-
   for (const head of SEED_CATEGORY_HEADS) {
-    const res = insertHead.run(userId, head.name, head.icon, head.color, head.sort_order);
+    const res = await db.run(`
+      INSERT INTO category_heads (user_id, name, icon, color, sort_order)
+      VALUES (?, ?, ?, ?, ?)
+    `, userId, head.name, head.icon, head.color, head.sort_order);
     const headId = Number(res.lastInsertRowid);
     for (const sub of head.sub_heads) {
-      insertSub.run(userId, headId, sub.name, head.name, sub.icon || head.icon, sub.color || head.color, sub.sort_order);
+      await db.run(`
+        INSERT INTO categories (user_id, head_id, name, group_name, icon, color, sort_order)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `, userId, headId, sub.name, head.name, sub.icon || head.icon, sub.color || head.color, sub.sort_order);
     }
   }
 }

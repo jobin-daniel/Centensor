@@ -6,41 +6,200 @@ import { SEED_CURRENCIES, SEED_INSTITUTIONS } from './seeds';
 
 let dbInstance: DatabaseSync | null = null;
 
+export function isCloudflare(): boolean {
+  return (
+    typeof (globalThis as any).WebSocketPair !== 'undefined' ||
+    process.env.CF_PAGES === '1' ||
+    process.env.NEXT_RUNTIME === 'edge' ||
+    Boolean((globalThis as any).DB) ||
+    Boolean((process.env as any).DB) ||
+    Boolean((globalThis as any).__CF_PAGES_CTX__)
+  );
+}
+
+export function getD1(): any {
+  if (typeof (globalThis as any).DB !== 'undefined') {
+    return (globalThis as any).DB;
+  }
+  if (typeof (process.env as any).DB !== 'undefined') {
+    return (process.env as any).DB;
+  }
+  if (typeof (globalThis as any).__CF_PAGES_CTX__?.env?.DB !== 'undefined') {
+    return (globalThis as any).__CF_PAGES_CTX__.env.DB;
+  }
+  if (typeof (globalThis as any).__env__?.DB !== 'undefined') {
+    return (globalThis as any).__env__.DB;
+  }
+  try {
+    const globalContext = (globalThis as any).__CF_PAGES_CTX__ || (globalThis as any).__openNextContext;
+    if (globalContext?.env?.DB) return globalContext.env.DB;
+  } catch {
+    // Ignore if not present
+  }
+  return null;
+}
+
+export interface AsyncDb {
+  all<T = any>(sql: string, ...params: any[]): Promise<T[]>;
+  get<T = any>(sql: string, ...params: any[]): Promise<T | null>;
+  run(sql: string, ...params: any[]): Promise<{ changes: number; lastInsertRowid: number }>;
+  exec(sql: string): Promise<void>;
+  prepare(sql: string): {
+    all<T = any>(...params: any[]): Promise<T[]>;
+    get<T = any>(...params: any[]): Promise<T | null>;
+    run(...params: any[]): Promise<{ changes: number; lastInsertRowid: number }>;
+  };
+}
+
+export function getAsyncDb(): AsyncDb {
+  const d1 = getD1();
+  if (d1) {
+    return {
+      async all<T = any>(sql: string, ...params: any[]): Promise<T[]> {
+        const stmt = params.length > 0 ? d1.prepare(sql).bind(...params) : d1.prepare(sql);
+        const res = await stmt.all();
+        return (res.results || []) as T[];
+      },
+      async get<T = any>(sql: string, ...params: any[]): Promise<T | null> {
+        const stmt = params.length > 0 ? d1.prepare(sql).bind(...params) : d1.prepare(sql);
+        const row = await stmt.first();
+        return (row ?? null) as T | null;
+      },
+      async run(sql: string, ...params: any[]): Promise<{ changes: number; lastInsertRowid: number }> {
+        const stmt = params.length > 0 ? d1.prepare(sql).bind(...params) : d1.prepare(sql);
+        const res = await stmt.run();
+        return {
+          changes: Number(res.meta?.changes ?? 0),
+          lastInsertRowid: Number(res.meta?.last_row_id ?? 0),
+        };
+      },
+      async exec(sql: string): Promise<void> {
+        await d1.exec(sql);
+      },
+      prepare(sql: string) {
+        return {
+          async all<T = any>(...params: any[]): Promise<T[]> {
+            const stmt = params.length > 0 ? d1.prepare(sql).bind(...params) : d1.prepare(sql);
+            const res = await stmt.all();
+            return (res.results || []) as T[];
+          },
+          async get<T = any>(...params: any[]): Promise<T | null> {
+            const stmt = params.length > 0 ? d1.prepare(sql).bind(...params) : d1.prepare(sql);
+            const row = await stmt.first();
+            return (row ?? null) as T | null;
+          },
+          async run(...params: any[]): Promise<{ changes: number; lastInsertRowid: number }> {
+            const stmt = params.length > 0 ? d1.prepare(sql).bind(...params) : d1.prepare(sql);
+            const res = await stmt.run();
+            return {
+              changes: Number(res.meta?.changes ?? 0),
+              lastInsertRowid: Number(res.meta?.last_row_id ?? 0),
+            };
+          },
+        };
+      },
+    };
+  }
+
+  // Local SQLite fallback (Node.js runtime)
+  const localDb = getDb();
+  return {
+    async all<T = any>(sql: string, ...params: any[]): Promise<T[]> {
+      return localDb.prepare(sql).all(...params) as T[];
+    },
+    async get<T = any>(sql: string, ...params: any[]): Promise<T | null> {
+      const row = localDb.prepare(sql).get(...params);
+      return (row ?? null) as T | null;
+    },
+    async run(sql: string, ...params: any[]): Promise<{ changes: number; lastInsertRowid: number }> {
+      const res = localDb.prepare(sql).run(...params);
+      return {
+        changes: Number(res.changes),
+        lastInsertRowid: Number(res.lastInsertRowid),
+      };
+    },
+    async exec(sql: string): Promise<void> {
+      localDb.exec(sql);
+    },
+    prepare(sql: string) {
+      const stmt = localDb.prepare(sql);
+      return {
+        async all<T = any>(...params: any[]): Promise<T[]> {
+          return stmt.all(...params) as T[];
+        },
+        async get<T = any>(...params: any[]): Promise<T | null> {
+          const row = stmt.get(...params);
+          return (row ?? null) as T | null;
+        },
+        async run(...params: any[]): Promise<{ changes: number; lastInsertRowid: number }> {
+          const res = stmt.run(...params);
+          return {
+            changes: Number(res.changes),
+            lastInsertRowid: Number(res.lastInsertRowid),
+          };
+        },
+      };
+    },
+  };
+}
+
 export function getDb(): DatabaseSync {
   if (dbInstance) {
     return dbInstance;
   }
 
-  const dbDir = path.join(process.cwd(), 'data');
-  if (!fs.existsSync(dbDir)) {
-    fs.mkdirSync(dbDir, { recursive: true });
+  // Guard against filesystem operations on Cloudflare Workers
+  if (isCloudflare()) {
+    try {
+      // In-memory fallback if sync getDb() is invoked on edge
+      const inMemoryDb = new DatabaseSync(':memory:');
+      return inMemoryDb;
+    } catch {
+      // Return a safe mock object to prevent crash
+      return {
+        exec: () => {},
+        prepare: () => ({ all: () => [], get: () => null, run: () => ({ changes: 0, lastInsertRowid: 0 }) }),
+        close: () => {},
+      } as unknown as DatabaseSync;
+    }
   }
 
-  const dbPath = path.join(dbDir, 'centensor.db');
-  const legacyDbPath = path.join(dbDir, 'wise_expenso.db');
-  const activeDbPath = fs.existsSync(dbPath) ? dbPath : (fs.existsSync(legacyDbPath) ? legacyDbPath : dbPath);
-  const db = new DatabaseSync(activeDbPath);
+  try {
+    const dbDir = path.join(process.cwd(), 'data');
+    if (!fs.existsSync(dbDir)) {
+      fs.mkdirSync(dbDir, { recursive: true });
+    }
 
-  // Enable WAL mode & foreign keys for performance and integrity
-  db.exec('PRAGMA journal_mode = WAL;');
-  db.exec('PRAGMA foreign_keys = ON;');
+    const dbPath = path.join(dbDir, 'centensor.db');
+    const legacyDbPath = path.join(dbDir, 'wise_expenso.db');
+    const activeDbPath = fs.existsSync(dbPath) ? dbPath : (fs.existsSync(legacyDbPath) ? legacyDbPath : dbPath);
+    const db = new DatabaseSync(activeDbPath);
 
-  // Ensure migrations for multi-tenant SaaS
-  runTenantMigrations(db);
+    // Enable WAL mode & foreign keys for performance and integrity
+    db.exec('PRAGMA journal_mode = WAL;');
+    db.exec('PRAGMA foreign_keys = ON;');
 
-  // Initialize schema
-  const schemaPath = path.join(process.cwd(), 'src', 'lib', 'db', 'schema.sql');
-  if (fs.existsSync(schemaPath)) {
-    const schemaSql = fs.readFileSync(schemaPath, 'utf8');
-    db.exec(schemaSql);
+    // Ensure migrations for multi-tenant SaaS
+    runTenantMigrations(db);
+
+    // Initialize schema
+    const schemaPath = path.join(process.cwd(), 'src', 'lib', 'db', 'schema.sql');
+    if (fs.existsSync(schemaPath)) {
+      const schemaSql = fs.readFileSync(schemaPath, 'utf8');
+      db.exec(schemaSql);
+    }
+
+    // Seed shared master data (currencies, institutions)
+    seedMasterData(db);
+
+    dbInstance = db;
+    return dbInstance;
+  } catch (err) {
+    console.warn('Local SQLite initialization bypassed (read-only filesystem):', err);
+    return new DatabaseSync(':memory:');
   }
-
-  // Seed shared master data (currencies, institutions)
-  seedMasterData(db);
-
-  dbInstance = db;
-  return dbInstance;
 }
+
 
 function runTenantMigrations(db: DatabaseSync) {
   try {
