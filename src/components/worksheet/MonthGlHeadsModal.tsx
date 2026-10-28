@@ -29,6 +29,7 @@ interface MonthGlHeadsModalProps {
   year: number;
   month: number;
   monthName: string;
+  initialTab?: 'select' | 'reorder';
   onClose: () => void;
   onSuccess: () => void;
 }
@@ -56,12 +57,13 @@ export default function MonthGlHeadsModal({
   year,
   month,
   monthName,
+  initialTab = 'select',
   onClose,
   onSuccess,
 }: MonthGlHeadsModalProps) {
   const monthStr = `${year}-${String(month).padStart(2, '0')}`;
 
-  const [activeTab, setActiveTab] = useState<ModalTab>('select');
+  const [activeTab, setActiveTab] = useState<ModalTab>(initialTab);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [preferences, setPreferences] = useState<MonthlyGlPreferences | null>(null);

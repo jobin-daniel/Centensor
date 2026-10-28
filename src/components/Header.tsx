@@ -15,6 +15,7 @@ import {
   Sparkles,
   LogOut,
   User,
+  Sliders,
 } from 'lucide-react';
 import { useSession, signOut } from 'next-auth/react';
 import { AccountBook } from '@/lib/types';
@@ -212,6 +213,28 @@ export default function Header({
                     </span>
                   </button>
                 ))}
+                <a
+                  href="/settings?tab=books"
+                  onClick={() => setIsBookMenuOpen(false)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    width: '100%',
+                    padding: '11px 16px',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    color: 'var(--primary)',
+                    background: 'rgba(139, 92, 246, 0.08)',
+                    textDecoration: 'none',
+                    borderTop: '1px solid var(--border-subtle)',
+                    transition: 'all 0.15s ease',
+                  }}
+                >
+                  <Sliders size={13} />
+                  <span>Manage / Edit Account Books →</span>
+                </a>
               </div>
             )}
           </div>

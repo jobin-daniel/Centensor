@@ -19,8 +19,9 @@ import {
   Sparkles,
   X,
   Filter,
+  Pencil,
 } from 'lucide-react';
-import { ExpenseDashboardData, AccountBook } from '@/lib/types';
+import { ExpenseDashboardData, AccountBook, Transaction } from '@/lib/types';
 import { formatCurrency } from '@/lib/formatters';
 import MonthlyTrendChart from './MonthlyTrendChart';
 import CategoryDonutChart from './CategoryDonutChart';
@@ -36,6 +37,7 @@ interface ExpensesDashboardProps {
   onMonthChange?: (year: number, month: number) => void;
   onBookChange?: (bookId: number) => void;
   onOpenNewTxModal?: () => void;
+  onEditTransaction?: (tx: Transaction) => void;
 }
 
 export default function ExpensesDashboard({
@@ -47,6 +49,7 @@ export default function ExpensesDashboard({
   onMonthChange,
   onBookChange,
   onOpenNewTxModal,
+  onEditTransaction,
 }: ExpensesDashboardProps) {
   const [data, setData] = useState<ExpenseDashboardData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -381,7 +384,7 @@ export default function ExpensesDashboard({
                     borderRadius: '999px',
                     background: 'linear-gradient(135deg, rgba(139, 92, 246, 0.25), rgba(236, 72, 153, 0.25))',
                     border: '1px solid rgba(139, 92, 246, 0.4)',
-                    color: '#ffffff',
+                    color: 'var(--text-primary)',
                     display: 'flex',
                     alignItems: 'center',
                     gap: '6px',
@@ -390,7 +393,7 @@ export default function ExpensesDashboard({
                   <span>Filtering: {selectedHead.headIcon} {selectedHead.headName}</span>
                   <button
                     onClick={() => setSelectedHeadId(null)}
-                    style={{ background: 'transparent', border: 'none', color: '#ffffff', cursor: 'pointer', padding: 0 }}
+                    style={{ background: 'transparent', border: 'none', color: 'var(--text-primary)', cursor: 'pointer', padding: 0 }}
                     title="Clear category filter"
                   >
                     <X size={12} />
@@ -473,8 +476,8 @@ export default function ExpensesDashboard({
         </div>
       )}
 
-      {/* 3. Tata Neu Pass / Financial Account Status Banner */}
-      <div className="neu-pass-card">
+      {/* 3. Centensor Prime / Financial Account Status Banner */}
+      <div className="centensor-status-card">
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
           <div
             style={{
@@ -494,7 +497,7 @@ export default function ExpensesDashboard({
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <span style={{ fontSize: '11px', fontWeight: 800, color: 'var(--primary)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-                Centensor Neu Pass
+                Centensor Prime
               </span>
               <span
                 style={{
@@ -510,7 +513,7 @@ export default function ExpensesDashboard({
                 {currCode} Active
               </span>
             </div>
-            <div style={{ fontSize: '20px', fontWeight: 800, letterSpacing: '-0.02em', color: '#ffffff', marginTop: '2px' }}>
+            <div style={{ fontSize: '20px', fontWeight: 800, letterSpacing: '-0.02em', color: 'var(--text-primary)', marginTop: '2px' }}>
               {data.bookName}
             </div>
             <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
@@ -533,7 +536,7 @@ export default function ExpensesDashboard({
             style={{
               height: '8px',
               borderRadius: '999px',
-              background: 'rgba(255, 255, 255, 0.1)',
+              background: 'var(--border-strong)',
               overflow: 'hidden',
               display: 'flex',
             }}
@@ -564,7 +567,7 @@ export default function ExpensesDashboard({
           <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
             Total Period Outflow
           </div>
-          <div style={{ fontSize: '26px', fontWeight: 800, color: '#ffffff', fontFamily: 'var(--font-mono)' }}>
+          <div style={{ fontSize: '26px', fontWeight: 800, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
             {formatCurrency(summary.totalExpenses, currCode, currSymbol)}
           </div>
           <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
@@ -1211,6 +1214,7 @@ export default function ExpensesDashboard({
                 <th>Payment Channel</th>
                 <th>Account</th>
                 <th style={{ textAlign: 'right' }}>Amount</th>
+                {onEditTransaction && <th style={{ width: '50px', textAlign: 'center' }}>Action</th>}
               </tr>
             </thead>
             <tbody>
@@ -1273,11 +1277,29 @@ export default function ExpensesDashboard({
                         )}
                       </span>
                     </td>
+                    {onEditTransaction && (
+                      <td style={{ textAlign: 'center' }}>
+                        <button
+                          onClick={() => onEditTransaction(tx)}
+                          style={{
+                            background: 'transparent',
+                            border: 'none',
+                            color: 'var(--text-muted)',
+                            cursor: 'pointer',
+                            padding: '4px',
+                            borderRadius: 'var(--radius-sm)',
+                          }}
+                          title="Edit expense"
+                        >
+                          <Pencil size={15} />
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td colSpan={6} style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)' }}>
+                  <td colSpan={onEditTransaction ? 7 : 6} style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)' }}>
                     No transactions recorded for this period.
                   </td>
                 </tr>

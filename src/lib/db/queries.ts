@@ -25,7 +25,24 @@ import {
   PaymentMethodBreakdown,
   AccountExpenseBreakdown,
   MonthlyGlPreferences,
+  WorksheetGroupSection,
+  MonthlyBudgetData,
+  HeadBudgetSummary,
+  CategoryBudgetDetail,
+  BudgetHistoricalMonth,
+  MonthlyBudgetSummary,
+  SmartBudgetRule,
+  RecurringTransaction,
+  RecurringFrequency,
+  IncomeType,
+  IncomeDashboardData,
+  IncomeSummary,
+  IncomeTypeBreakdown,
+  IncomeMonthlyTrendItem,
+  PettyHandLoanItem,
+  IncomeStreamDefinition,
 } from '../types';
+import { INCOME_STREAM_DEFINITIONS, getIncomeStreamDef } from '../income-taxonomies';
 import { getDaysInMonth, getMonthName, isWeekend, isCurrentDay, formatDateISO, getDayOfWeekAbbr } from '../formatters';
 
 // --- Master Currencies ---
@@ -63,7 +80,9 @@ export function setMasterCurrency(code: string): void {
 export function getAccountBooks(userId?: number): AccountBook[] {
   const db = getDb();
   let query = `
-    SELECT b.*, c.symbol as currency_symbol
+    SELECT b.*, c.symbol as currency_symbol,
+      (SELECT COUNT(*) FROM accounts a WHERE a.book_id = b.id) as accounts_count,
+      (SELECT COUNT(*) FROM transactions t WHERE t.book_id = b.id) as transactions_count
     FROM account_books b
     LEFT JOIN currencies c ON b.currency_code = c.code
   `;
@@ -80,7 +99,9 @@ export function getAccountBooks(userId?: number): AccountBook[] {
 export function getAccountBookById(id: number, userId?: number): AccountBook | null {
   const db = getDb();
   let query = `
-    SELECT b.*, c.symbol as currency_symbol
+    SELECT b.*, c.symbol as currency_symbol,
+      (SELECT COUNT(*) FROM accounts a WHERE a.book_id = b.id) as accounts_count,
+      (SELECT COUNT(*) FROM transactions t WHERE t.book_id = b.id) as transactions_count
     FROM account_books b
     LEFT JOIN currencies c ON b.currency_code = c.code
     WHERE b.id = ?
@@ -94,24 +115,199 @@ export function getAccountBookById(id: number, userId?: number): AccountBook | n
   return row || null;
 }
 
-export function createAccountBook(data: { user_id?: number; name: string; currency_code: string; description?: string }): AccountBook {
+export function createAccountBook(data: {
+  user_id?: number;
+  name: string;
+  currency_code: string;
+  description?: string;
+  is_default?: number;
+  sort_order?: number;
+}): AccountBook {
   const db = getDb();
-  const res = db.prepare(`
-    INSERT INTO account_books (user_id, name, currency_code, description, is_default, sort_order)
-    VALUES (?, ?, ?, ?, 0, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM account_books WHERE (? IS NULL OR user_id = ?)))
-  `).run(data.user_id || null, data.name, data.currency_code, data.description || null, data.user_id || null, data.user_id || null);
-  
-  const newId = Number(res.lastInsertRowid);
-  // Create default cash account for this book
-  createAccount({
-    book_id: newId,
-    name: `Cash in Hand (${data.currency_code})`,
-    type: 'cash',
-    currency_code: data.currency_code,
-    opening_balance: 0,
-  });
+  const isDefault = data.is_default ? 1 : 0;
 
-  return getAccountBookById(newId, data.user_id)!;
+  db.exec('BEGIN TRANSACTION;');
+  try {
+    const curr = db.prepare('SELECT code FROM currencies WHERE code = ?').get(data.currency_code);
+    if (!curr) {
+      throw new Error(`Currency '${data.currency_code}' is not supported. Please configure this currency first.`);
+    }
+
+    if (isDefault === 1) {
+      if (data.user_id) {
+        db.prepare('UPDATE account_books SET is_default = 0 WHERE user_id = ?').run(data.user_id);
+      } else {
+        db.prepare('UPDATE account_books SET is_default = 0 WHERE user_id IS NULL').run();
+      }
+    }
+
+    const res = db.prepare(`
+      INSERT INTO account_books (user_id, name, currency_code, description, is_default, sort_order)
+      VALUES (?, ?, ?, ?, ?, COALESCE(?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM account_books WHERE (? IS NULL OR user_id = ?))))
+    `).run(
+      data.user_id || null,
+      data.name.trim(),
+      data.currency_code,
+      data.description?.trim() || null,
+      isDefault,
+      data.sort_order !== undefined ? data.sort_order : null,
+      data.user_id || null,
+      data.user_id || null
+    );
+    
+    const newId = Number(res.lastInsertRowid);
+    // Create default cash account for this book
+    createAccount({
+      book_id: newId,
+      name: `Cash in Hand (${data.currency_code})`,
+      type: 'cash',
+      currency_code: data.currency_code,
+      opening_balance: 0,
+    });
+
+    db.exec('COMMIT;');
+    return getAccountBookById(newId, data.user_id)!;
+  } catch (e) {
+    db.exec('ROLLBACK;');
+    throw e;
+  }
+}
+
+export function updateAccountBook(
+  id: number,
+  data: {
+    name?: string;
+    currency_code?: string;
+    description?: string | null;
+    is_default?: number;
+    sort_order?: number;
+  },
+  userId?: number
+): AccountBook {
+  const db = getDb();
+  const current = getAccountBookById(id, userId);
+  if (!current) throw new Error('Account book not found');
+
+  db.exec('BEGIN TRANSACTION;');
+  try {
+    if (data.currency_code) {
+      const curr = db.prepare('SELECT code FROM currencies WHERE code = ?').get(data.currency_code);
+      if (!curr) {
+        throw new Error(`Currency '${data.currency_code}' is not supported. Please configure this currency first.`);
+      }
+    }
+
+    const isDefault = data.is_default !== undefined ? (data.is_default ? 1 : 0) : current.is_default;
+
+    if (isDefault === 1 && current.is_default !== 1) {
+      // Set all other books for this user to is_default = 0
+      if (userId) {
+        db.prepare('UPDATE account_books SET is_default = 0 WHERE user_id = ? AND id != ?').run(userId, id);
+      } else {
+        db.prepare('UPDATE account_books SET is_default = 0 WHERE (user_id IS NULL OR user_id = ?) AND id != ?').run(current.user_id || null, id);
+      }
+    }
+
+    db.prepare(`
+      UPDATE account_books
+      SET name = ?,
+          currency_code = ?,
+          description = ?,
+          is_default = ?,
+          sort_order = ?
+      WHERE id = ?
+    `).run(
+      data.name !== undefined ? data.name.trim() : current.name,
+      data.currency_code !== undefined ? data.currency_code : current.currency_code,
+      data.description !== undefined ? (data.description ? data.description.trim() : null) : (current.description || null),
+      isDefault,
+      data.sort_order !== undefined ? data.sort_order : current.sort_order,
+      id
+    );
+
+    db.exec('COMMIT;');
+    return getAccountBookById(id, userId)!;
+  } catch (e) {
+    db.exec('ROLLBACK;');
+    throw e;
+  }
+}
+
+export function deleteAccountBook(
+  id: number,
+  userId?: number
+): { success: boolean; message?: string } {
+  const db = getDb();
+  const current = getAccountBookById(id, userId);
+  if (!current) throw new Error('Account book not found');
+
+  const countQuery = 'SELECT COUNT(*) as count FROM account_books WHERE (? IS NULL OR user_id = ?)';
+  const totalBooks = (db.prepare(countQuery).get(userId || null, userId || null) as { count: number })?.count ?? 0;
+
+  if (totalBooks <= 1) {
+    throw new Error('Cannot delete your only account book. A workspace must retain at least one active account book.');
+  }
+
+  db.exec('BEGIN TRANSACTION;');
+  try {
+    const wasDefault = current.is_default === 1;
+
+    // 1. Any transfers from other books to an account in this book: set to_account_id to NULL
+    db.prepare(`
+      UPDATE transactions 
+      SET to_account_id = NULL 
+      WHERE to_account_id IN (SELECT id FROM accounts WHERE book_id = ?)
+    `).run(id);
+
+    // 2. Delete transactions in this book
+    db.prepare('DELETE FROM transactions WHERE book_id = ?').run(id);
+
+    // 3. Delete accounts in this book
+    db.prepare('DELETE FROM accounts WHERE book_id = ?').run(id);
+
+    // 4. Delete budgets in this book
+    db.prepare('DELETE FROM budgets WHERE book_id = ?').run(id);
+
+    // 5. Delete worksheet preferences / heads / categories in this book
+    db.prepare('DELETE FROM monthly_worksheet_heads WHERE book_id = ?').run(id);
+    db.prepare('DELETE FROM monthly_worksheet_categories WHERE book_id = ?').run(id);
+
+    // 6. Delete recurring transactions in this book
+    db.prepare('DELETE FROM recurring_transactions WHERE book_id = ?').run(id);
+
+    // 7. Delete daily reconciliations in this book
+    db.prepare('DELETE FROM daily_reconciliations WHERE book_id = ?').run(id);
+
+    // 8. Delete the account book itself
+    let delQuery = 'DELETE FROM account_books WHERE id = ?';
+    const delParams: (string | number)[] = [id];
+    if (userId) {
+      delQuery += ' AND user_id = ?';
+      delParams.push(userId);
+    }
+    db.prepare(delQuery).run(...delParams);
+
+    // 9. If the deleted book was the default, promote another book as default
+    if (wasDefault) {
+      const promoteQuery = `
+        UPDATE account_books 
+        SET is_default = 1 
+        WHERE id = (
+          SELECT id FROM account_books 
+          WHERE (? IS NULL OR user_id = ?) 
+          ORDER BY sort_order ASC, id ASC 
+          LIMIT 1
+        )
+      `;
+      db.prepare(promoteQuery).run(userId || null, userId || null);
+    }
+
+    db.exec('COMMIT;');
+    return { success: true, message: 'Account book and associated records deleted successfully.' };
+  } catch (e) {
+    db.exec('ROLLBACK;');
+    throw e;
+  }
 }
 
 // --- Institutions ---
@@ -183,6 +379,107 @@ export function createAccount(data: {
   );
 
   return db.prepare('SELECT * FROM accounts WHERE id = ?').get(res.lastInsertRowid) as unknown as Account;
+}
+
+export function getAccountById(id: number, userId?: number): Account | null {
+  const db = getDb();
+  let query = `
+    SELECT a.*, b.name as book_name, i.name as institution_name, c.symbol as currency_symbol
+    FROM accounts a
+    JOIN account_books b ON a.book_id = b.id
+    LEFT JOIN institutions i ON a.institution_id = i.id
+    LEFT JOIN currencies c ON a.currency_code = c.code
+    WHERE a.id = ?
+  `;
+  const params: (string | number)[] = [id];
+  if (userId) {
+    query += ' AND b.user_id = ?';
+    params.push(userId);
+  }
+  const row = db.prepare(query).get(...params) as unknown as Account | undefined;
+  return row || null;
+}
+
+export function updateAccount(
+  id: number,
+  data: {
+    book_id?: number;
+    institution_id?: number | null;
+    name?: string;
+    type?: string;
+    currency_code?: string;
+    account_number_last4?: string | null;
+    opening_balance?: number;
+    credit_limit?: number;
+    billing_cycle_day?: number | null;
+    is_active?: number;
+  },
+  userId?: number
+): Account {
+  const db = getDb();
+  const current = getAccountById(id, userId);
+  if (!current) throw new Error('Account not found');
+
+  db.exec('BEGIN TRANSACTION;');
+  try {
+    let newCurrentBalance = current.current_balance;
+    if (data.opening_balance !== undefined && data.opening_balance !== current.opening_balance) {
+      const diff = data.opening_balance - current.opening_balance;
+      newCurrentBalance = current.current_balance + diff;
+    }
+
+    db.prepare(`
+      UPDATE accounts
+      SET book_id = ?,
+          institution_id = ?,
+          name = ?,
+          type = ?,
+          currency_code = ?,
+          account_number_last4 = ?,
+          opening_balance = ?,
+          current_balance = ?,
+          credit_limit = ?,
+          billing_cycle_day = ?,
+          is_active = ?
+      WHERE id = ?
+    `).run(
+      data.book_id !== undefined ? data.book_id : current.book_id,
+      data.institution_id !== undefined ? (data.institution_id ?? null) : (current.institution_id ?? null),
+      data.name !== undefined ? data.name.trim() : current.name,
+      data.type !== undefined ? data.type : current.type,
+      data.currency_code !== undefined ? data.currency_code : current.currency_code,
+      data.account_number_last4 !== undefined ? (data.account_number_last4 ?? null) : (current.account_number_last4 ?? null),
+      data.opening_balance !== undefined ? data.opening_balance : current.opening_balance,
+      newCurrentBalance,
+      data.credit_limit !== undefined ? data.credit_limit : (current.credit_limit || 0),
+      data.billing_cycle_day !== undefined ? (data.billing_cycle_day ?? null) : (current.billing_cycle_day ?? null),
+      data.is_active !== undefined ? data.is_active : current.is_active,
+      id
+    );
+
+    db.exec('COMMIT;');
+    return getAccountById(id, userId)!;
+  } catch (e) {
+    db.exec('ROLLBACK;');
+    throw e;
+  }
+}
+
+export function deleteAccount(id: number, userId?: number): { success: boolean; transactionsCount: number } {
+  const db = getDb();
+  const current = getAccountById(id, userId);
+  if (!current) throw new Error('Account not found');
+
+  const txCount = (db.prepare('SELECT COUNT(*) as count FROM transactions WHERE account_id = ? OR to_account_id = ?').get(id, id) as { count: number })?.count ?? 0;
+
+  if (txCount > 0) {
+    // Soft delete / deactivate so historical transactions and ledgers remain intact
+    db.prepare('UPDATE accounts SET is_active = 0 WHERE id = ?').run(id);
+    return { success: true, transactionsCount: txCount };
+  }
+
+  db.prepare('DELETE FROM accounts WHERE id = ?').run(id);
+  return { success: true, transactionsCount: 0 };
 }
 
 // --- Categories, Main Heads & Budgets ---
@@ -474,6 +771,389 @@ export function setCategoryBudget(bookId: number, categoryId: number, month: str
   `).run(bookId, month, categoryId, amount);
 }
 
+export function setMultipleCategoryBudgets(bookId: number, month: string, items: { categoryId: number; amount: number }[]): void {
+  const db = getDb();
+  db.exec('BEGIN TRANSACTION;');
+  try {
+    const stmt = db.prepare(`
+      INSERT INTO budgets (book_id, month, category_id, amount)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(book_id, month, category_id) DO UPDATE SET amount = excluded.amount
+    `);
+    for (const item of items) {
+      stmt.run(bookId, month, item.categoryId, Math.max(0, Number(item.amount) || 0));
+    }
+    db.exec('COMMIT;');
+  } catch (e) {
+    db.exec('ROLLBACK;');
+    throw e;
+  }
+}
+
+export function copyBudgetsFromMonth(bookId: number, sourceMonth: string, targetMonth: string): { copiedCount: number } {
+  const db = getDb();
+  const sourceBudgets = db.prepare(`
+    SELECT category_id, amount FROM budgets WHERE book_id = ? AND month = ?
+  `).all(bookId, sourceMonth) as { category_id: number; amount: number }[];
+
+  if (sourceBudgets.length === 0) {
+    return { copiedCount: 0 };
+  }
+
+  db.exec('BEGIN TRANSACTION;');
+  try {
+    const stmt = db.prepare(`
+      INSERT INTO budgets (book_id, month, category_id, amount)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(book_id, month, category_id) DO UPDATE SET amount = excluded.amount
+    `);
+    for (const b of sourceBudgets) {
+      stmt.run(bookId, targetMonth, b.category_id, b.amount);
+    }
+    db.exec('COMMIT;');
+    return { copiedCount: sourceBudgets.length };
+  } catch (e) {
+    db.exec('ROLLBACK;');
+    throw e;
+  }
+}
+
+export function clearMonthBudgets(bookId: number, month: string): void {
+  const db = getDb();
+  db.prepare('DELETE FROM budgets WHERE book_id = ? AND month = ?').run(bookId, month);
+}
+
+export function applySmartBudgetRule(
+  bookId: number,
+  targetMonth: string,
+  rule: SmartBudgetRule,
+  userId?: number
+): { updatedCount: number } {
+  const db = getDb();
+  const [yearStr, monthNumStr] = targetMonth.split('-');
+  const year = parseInt(yearStr, 10);
+  const month = parseInt(monthNumStr, 10);
+
+  const prevDate = new Date(year, month - 2, 1);
+  const prevMonthStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
+
+  const categories = getCategories(bookId, prevMonthStr, userId);
+
+  let newBudgets: { categoryId: number; amount: number }[] = [];
+
+  if (rule === 'prev_month_budget') {
+    const prevBudgets = db.prepare(`
+      SELECT category_id, amount FROM budgets WHERE book_id = ? AND month = ?
+    `).all(bookId, prevMonthStr) as { category_id: number; amount: number }[];
+    newBudgets = prevBudgets.map(b => ({ categoryId: b.category_id, amount: b.amount }));
+  } else if (rule === 'prev_month_actual') {
+    const prevActuals = db.prepare(`
+      SELECT category_id, COALESCE(SUM(amount), 0) as spent
+      FROM transactions
+      WHERE book_id = ? AND date LIKE ? AND type = 'expense' AND category_id IS NOT NULL
+      GROUP BY category_id
+    `).all(bookId, `${prevMonthStr}%`) as { category_id: number; spent: number }[];
+    newBudgets = prevActuals.map(a => ({ categoryId: a.category_id, amount: Math.round(a.spent) }));
+  } else if (rule === '3month_avg') {
+    const threeMonthStartDate = new Date(year, month - 4, 1);
+    const startStr = `${threeMonthStartDate.getFullYear()}-${String(threeMonthStartDate.getMonth() + 1).padStart(2, '0')}-01`;
+    const endStr = `${targetMonth}-01`;
+
+    const trailingActuals = db.prepare(`
+      SELECT category_id, COALESCE(SUM(amount), 0) as total_spent
+      FROM transactions
+      WHERE book_id = ? AND date >= ? AND date < ? AND type = 'expense' AND category_id IS NOT NULL
+      GROUP BY category_id
+    `).all(bookId, startStr, endStr) as { category_id: number; total_spent: number }[];
+
+    newBudgets = trailingActuals.map(t => ({
+      categoryId: t.category_id,
+      amount: Math.round(t.total_spent / 3),
+    }));
+  } else if (rule === 'prev_budget_plus_5' || rule === 'prev_budget_plus_10' || rule === 'prev_budget_minus_5') {
+    const factor = rule === 'prev_budget_plus_5' ? 1.05 : rule === 'prev_budget_plus_10' ? 1.10 : 0.95;
+    const prevBudgets = db.prepare(`
+      SELECT category_id, amount FROM budgets WHERE book_id = ? AND month = ?
+    `).all(bookId, prevMonthStr) as { category_id: number; amount: number }[];
+
+    newBudgets = prevBudgets.map(b => ({
+      categoryId: b.category_id,
+      amount: Math.round(b.amount * factor),
+    }));
+  }
+
+  if (newBudgets.length > 0) {
+    setMultipleCategoryBudgets(bookId, targetMonth, newBudgets);
+  }
+
+  return { updatedCount: newBudgets.length };
+}
+
+export function getMonthlyBudgetData(
+  bookId: number,
+  year: number,
+  month: number,
+  userId?: number
+): MonthlyBudgetData {
+  const db = getDb();
+  const masterCurrency = getMasterCurrency();
+  const book = getAccountBookById(bookId, userId) || getAccountBooks(userId)[0];
+  const monthStr = `${year}-${String(month).padStart(2, '0')}`;
+  const monthName = getMonthName(month);
+  const daysInMonth = getDaysInMonth(year, month);
+
+  // Previous month string
+  const prevDate = new Date(year, month - 2, 1);
+  const previousMonthStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
+
+  // 3-month trailing start date
+  const threeMonthStartDate = new Date(year, month - 4, 1);
+  const threeMonthStartStr = `${threeMonthStartDate.getFullYear()}-${String(threeMonthStartDate.getMonth() + 1).padStart(2, '0')}-01`;
+  const currentMonthStartStr = `${monthStr}-01`;
+
+  // 1. Get Categories and Heads for user
+  const heads = getCategoryHeads(userId);
+  const categories = getCategories(book.id, monthStr, userId);
+
+  // 2. Query current month transactions grouped by category
+  const currentMonthTxs = db.prepare(`
+    SELECT category_id, COALESCE(SUM(amount), 0) as spent, COUNT(id) as count
+    FROM transactions
+    WHERE book_id = ? AND date LIKE ? AND type = 'expense' AND category_id IS NOT NULL
+    GROUP BY category_id
+  `).all(book.id, `${monthStr}%`) as { category_id: number; spent: number; count: number }[];
+
+  const currentSpentMap = new Map<number, { spent: number; count: number }>();
+  currentMonthTxs.forEach(t => currentSpentMap.set(t.category_id, { spent: t.spent, count: t.count }));
+
+  // 3. Query previous month budgets
+  const prevBudgetRows = db.prepare(`
+    SELECT category_id, amount FROM budgets WHERE book_id = ? AND month = ?
+  `).all(book.id, previousMonthStr) as { category_id: number; amount: number }[];
+
+  const prevBudgetMap = new Map<number, number>();
+  prevBudgetRows.forEach(b => prevBudgetMap.set(b.category_id, b.amount));
+
+  // 4. Query previous month actuals
+  const prevMonthTxs = db.prepare(`
+    SELECT category_id, COALESCE(SUM(amount), 0) as spent
+    FROM transactions
+    WHERE book_id = ? AND date LIKE ? AND type = 'expense' AND category_id IS NOT NULL
+    GROUP BY category_id
+  `).all(book.id, `${previousMonthStr}%`) as { category_id: number; spent: number }[];
+
+  const prevSpentMap = new Map<number, number>();
+  prevMonthTxs.forEach(t => prevSpentMap.set(t.category_id, t.spent));
+
+  // 5. Query 3-month trailing spending
+  const trailingTxs = db.prepare(`
+    SELECT category_id, COALESCE(SUM(amount), 0) as total_spent
+    FROM transactions
+    WHERE book_id = ? AND date >= ? AND date < ? AND type = 'expense' AND category_id IS NOT NULL
+    GROUP BY category_id
+  `).all(book.id, threeMonthStartStr, currentMonthStartStr) as { category_id: number; total_spent: number }[];
+
+  const trailingAvgMap = new Map<number, number>();
+  trailingTxs.forEach(t => trailingAvgMap.set(t.category_id, Math.round(t.total_spent / 3)));
+
+  // 6. Build CategoryBudgetDetail list
+  const allCategories: CategoryBudgetDetail[] = categories.map(cat => {
+    const budget = cat.monthly_budget || 0;
+    const spentInfo = currentSpentMap.get(cat.id) || { spent: 0, count: 0 };
+    const spent = spentInfo.spent;
+    const variance = budget - spent;
+    const utilizationPercent = budget > 0 ? (spent / budget) * 100 : 0;
+    const prevMonthBudget = prevBudgetMap.get(cat.id) || 0;
+    const prevMonthSpent = prevSpentMap.get(cat.id) || 0;
+    const avg3MonthSpent = trailingAvgMap.get(cat.id) || 0;
+
+    let status: CategoryBudgetDetail['status'] = 'safe';
+    if (budget === 0 && spent === 0) {
+      status = 'zero_spend';
+    } else if (budget === 0 && spent > 0) {
+      status = 'unbudgeted';
+    } else if (spent > budget) {
+      status = 'danger';
+    } else if (utilizationPercent >= 80) {
+      status = 'warning';
+    } else {
+      status = 'safe';
+    }
+
+    return {
+      categoryId: cat.id,
+      categoryName: cat.name,
+      groupName: cat.group_name,
+      headId: cat.head_id,
+      headName: cat.head_name,
+      headIcon: cat.head_icon,
+      headColor: cat.color,
+      icon: cat.icon,
+      color: cat.color,
+      budget,
+      spent,
+      variance,
+      utilizationPercent,
+      status,
+      prevMonthBudget,
+      prevMonthSpent,
+      avg3MonthSpent,
+      transactionCount: spentInfo.count,
+    };
+  });
+
+  // 7. Build HeadBudgetSummary list
+  const headMap = new Map<number, HeadBudgetSummary>();
+  for (const h of heads) {
+    headMap.set(h.id, {
+      headId: h.id,
+      headName: h.name,
+      headIcon: h.icon || '📁',
+      headColor: h.color || '#6366f1',
+      totalBudget: 0,
+      totalSpent: 0,
+      variance: 0,
+      utilizationPercent: 0,
+      isOverBudget: false,
+      categories: [],
+    });
+  }
+
+  // Fallback 'Other' head if any category doesn't map to a head
+  const otherHead: HeadBudgetSummary = {
+    headId: 0,
+    headName: 'Other Categories',
+    headIcon: '🏷️',
+    headColor: '#64748b',
+    totalBudget: 0,
+    totalSpent: 0,
+    variance: 0,
+    utilizationPercent: 0,
+    isOverBudget: false,
+    categories: [],
+  };
+
+  for (const catDetail of allCategories) {
+    if (catDetail.headId && headMap.has(catDetail.headId)) {
+      const h = headMap.get(catDetail.headId)!;
+      h.categories.push(catDetail);
+      h.totalBudget += catDetail.budget;
+      h.totalSpent += catDetail.spent;
+    } else {
+      otherHead.categories.push(catDetail);
+      otherHead.totalBudget += catDetail.budget;
+      otherHead.totalSpent += catDetail.spent;
+    }
+  }
+
+  const headList: HeadBudgetSummary[] = [];
+  for (const h of headMap.values()) {
+    if (h.categories.length > 0) {
+      h.variance = h.totalBudget - h.totalSpent;
+      h.utilizationPercent = h.totalBudget > 0 ? (h.totalSpent / h.totalBudget) * 100 : 0;
+      h.isOverBudget = h.totalBudget > 0 && h.totalSpent > h.totalBudget;
+      headList.push(h);
+    }
+  }
+  if (otherHead.categories.length > 0) {
+    otherHead.variance = otherHead.totalBudget - otherHead.totalSpent;
+    otherHead.utilizationPercent = otherHead.totalBudget > 0 ? (otherHead.totalSpent / otherHead.totalBudget) * 100 : 0;
+    otherHead.isOverBudget = otherHead.totalBudget > 0 && otherHead.totalSpent > otherHead.totalBudget;
+    headList.push(otherHead);
+  }
+
+  // 8. 12-Month Historical Budget vs Actual for the selected year
+  const historicalMonthlyComparison: BudgetHistoricalMonth[] = [];
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+  for (let m = 1; m <= 12; m++) {
+    const ymStr = `${year}-${String(m).padStart(2, '0')}`;
+    const mBudgetRow = db.prepare(`
+      SELECT COALESCE(SUM(amount), 0) as b_total
+      FROM budgets
+      WHERE book_id = ? AND month = ?
+    `).get(book.id, ymStr) as { b_total: number };
+
+    const mSpentRow = db.prepare(`
+      SELECT COALESCE(SUM(amount), 0) as s_total
+      FROM transactions
+      WHERE book_id = ? AND date LIKE ? AND type = 'expense'
+    `).get(book.id, `${ymStr}%`) as { s_total: number };
+
+    const bVal = mBudgetRow?.b_total || 0;
+    const sVal = mSpentRow?.s_total || 0;
+    const vVal = bVal - sVal;
+    const util = bVal > 0 ? (sVal / bVal) * 100 : 0;
+
+    historicalMonthlyComparison.push({
+      month: m,
+      monthStr: monthNames[m - 1],
+      yearMonth: ymStr,
+      budget: bVal,
+      spent: sVal,
+      variance: vVal,
+      utilizationPercent: util,
+    });
+  }
+
+  // 9. Aggregate Summary Calculations
+  const totalBudget = allCategories.reduce((sum, c) => sum + c.budget, 0);
+  const totalSpent = allCategories.reduce((sum, c) => sum + c.spent, 0);
+  const variance = totalBudget - totalSpent;
+  const utilizationPercent = totalBudget > 0 ? (totalSpent / totalBudget) * 100 : 0;
+  const isOverBudget = totalBudget > 0 && totalSpent > totalBudget;
+
+  const totalCategoriesCount = allCategories.length;
+  const budgetedCategoriesCount = allCategories.filter(c => c.budget > 0).length;
+  const overBudgetCategoriesCount = allCategories.filter(c => c.status === 'danger').length;
+  const underBudgetCategoriesCount = allCategories.filter(c => c.status === 'safe' && c.budget > 0).length;
+  const unbudgetedCategoriesCount = allCategories.filter(c => c.status === 'unbudgeted').length;
+
+  // Run rate / EOM projection
+  const now = new Date();
+  const isCurrentMonthYear = now.getFullYear() === year && (now.getMonth() + 1) === month;
+  const isPastMonth = year < now.getFullYear() || (year === now.getFullYear() && month < (now.getMonth() + 1));
+  const elapsedDays = isCurrentMonthYear ? Math.max(1, Math.min(now.getDate(), daysInMonth)) : isPastMonth ? daysInMonth : 1;
+
+  const projectedEOMSpend = elapsedDays > 0 ? (totalSpent / elapsedDays) * daysInMonth : totalSpent;
+  const dailyBudget = daysInMonth > 0 ? totalBudget / daysInMonth : 0;
+  const dailyAvgSpent = elapsedDays > 0 ? totalSpent / elapsedDays : 0;
+
+  // Previous month summary
+  const prevMonthBudgetTotal = Array.from(prevBudgetMap.values()).reduce((a, b) => a + b, 0);
+  const prevMonthSpentTotal = Array.from(prevSpentMap.values()).reduce((a, b) => a + b, 0);
+
+  return {
+    year,
+    month,
+    monthName,
+    daysInMonth,
+    book,
+    masterCurrency,
+    summary: {
+      totalBudget,
+      totalSpent,
+      variance,
+      utilizationPercent,
+      isOverBudget,
+      totalCategoriesCount,
+      budgetedCategoriesCount,
+      overBudgetCategoriesCount,
+      underBudgetCategoriesCount,
+      unbudgetedCategoriesCount,
+      projectedEOMSpend,
+      dailyBudget,
+      dailyAvgSpent,
+      previousMonthTotalBudget: prevMonthBudgetTotal,
+      previousMonthTotalSpent: prevMonthSpentTotal,
+    },
+    heads: headList,
+    allCategories,
+    historicalMonthlyComparison,
+    previousMonthStr,
+  };
+}
+
 // --- Transactions ---
 export function createTransaction(data: {
   book_id: number;
@@ -487,6 +1167,10 @@ export function createTransaction(data: {
   description?: string;
   merchant?: string;
   notes?: string;
+  income_type?: IncomeType | string;
+  income_category?: string;
+  repayment_due_date?: string;
+  repayment_status?: string;
 }): Transaction {
   const db = getDb();
   const account = db.prepare('SELECT currency_code FROM accounts WHERE id = ?').get(data.account_id) as { currency_code: string };
@@ -504,8 +1188,9 @@ export function createTransaction(data: {
       INSERT INTO transactions (
         book_id, date, amount, currency_code, exchange_rate_to_master,
         amount_master_currency, category_id, account_id, payment_method,
-        type, to_account_id, description, merchant, notes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        type, to_account_id, description, merchant, notes,
+        income_type, income_category, repayment_due_date, repayment_status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       data.book_id,
       data.date,
@@ -520,7 +1205,11 @@ export function createTransaction(data: {
       data.to_account_id || null,
       data.description || null,
       data.merchant || null,
-      data.notes || null
+      data.notes || null,
+      data.income_type || null,
+      data.income_category || null,
+      data.repayment_due_date || null,
+      data.repayment_status || (data.income_type === 'petty_hand_loan' ? 'pending' : null)
     );
 
     // Update account balances based on type
@@ -539,6 +1228,21 @@ export function createTransaction(data: {
       db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(data.amount, data.account_id);
       if (data.to_account_id) {
         db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(data.amount, data.to_account_id);
+      }
+    } else if (type === 'transfer') {
+      // Generic Account Transfer (From source account to destination account)
+      db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(data.amount, data.account_id);
+      if (data.to_account_id) {
+        const toAcc = db.prepare('SELECT currency_code FROM accounts WHERE id = ?').get(data.to_account_id) as { currency_code: string } | undefined;
+        let creditAmount = data.amount;
+        if (toAcc && toAcc.currency_code !== currencyCode) {
+          const toCurr = db.prepare('SELECT exchange_rate_to_master FROM currencies WHERE code = ?').get(toAcc.currency_code) as { exchange_rate_to_master: number } | undefined;
+          const toRate = toCurr?.exchange_rate_to_master || 1.0;
+          if (toRate > 0) {
+            creditAmount = Number(((data.amount * rate) / toRate).toFixed(2));
+          }
+        }
+        db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(creditAmount, data.to_account_id);
       }
     }
 
@@ -592,6 +1296,21 @@ export function deleteTransaction(id: number, userId?: number): void {
       if (tx.to_account_id) {
         db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(tx.amount, tx.to_account_id);
       }
+    } else if (tx.type === 'transfer') {
+      db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(tx.amount, tx.account_id);
+      if (tx.to_account_id) {
+        const toAcc = db.prepare('SELECT currency_code FROM accounts WHERE id = ?').get(tx.to_account_id) as { currency_code: string } | undefined;
+        let creditAmount = tx.amount;
+        if (toAcc && toAcc.currency_code !== tx.currency_code) {
+          const toCurr = db.prepare('SELECT exchange_rate_to_master FROM currencies WHERE code = ?').get(toAcc.currency_code) as { exchange_rate_to_master: number } | undefined;
+          const toRate = toCurr?.exchange_rate_to_master || 1.0;
+          const fromRate = tx.exchange_rate_to_master || 1.0;
+          if (toRate > 0) {
+            creditAmount = Number(((tx.amount * fromRate) / toRate).toFixed(2));
+          }
+        }
+        db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(creditAmount, tx.to_account_id);
+      }
     }
 
     db.prepare('DELETE FROM transactions WHERE id = ?').run(id);
@@ -608,6 +1327,10 @@ export function getTransactions(filter: {
   date?: string; // YYYY-MM-DD
   category_id?: number;
   payment_method?: string;
+  type?: string;
+  income_type?: string;
+  repayment_status?: string;
+  search?: string;
   limit?: number;
   userId?: number;
 }): Transaction[] {
@@ -646,9 +1369,37 @@ export function getTransactions(filter: {
     query += ' AND t.category_id = ?';
     params.push(filter.category_id);
   }
+  if (filter.type) {
+    query += ' AND t.type = ?';
+    params.push(filter.type);
+  }
+  if (filter.income_type) {
+    query += ' AND t.income_type = ?';
+    params.push(filter.income_type);
+  }
+  if (filter.repayment_status) {
+    query += ' AND t.repayment_status = ?';
+    params.push(filter.repayment_status);
+  }
   if (filter.payment_method) {
-    query += ' AND t.payment_method = ?';
-    params.push(filter.payment_method);
+    if (filter.payment_method === 'income') {
+      query += " AND t.type = 'income'";
+    } else {
+      query += ' AND t.payment_method = ?';
+      params.push(filter.payment_method);
+    }
+  }
+  if (filter.search) {
+    const term = `%${filter.search.trim()}%`;
+    query += ` AND (
+      t.description LIKE ? OR
+      t.merchant LIKE ? OR
+      t.income_category LIKE ? OR
+      t.notes LIKE ? OR
+      c.name LIKE ? OR
+      a.name LIKE ?
+    )`;
+    params.push(term, term, term, term, term, term);
   }
 
   query += ' ORDER BY t.date DESC, t.id DESC';
@@ -890,14 +1641,23 @@ export function removeGlHeadFromMonth(bookId: number, monthStr: string, userId: 
     throw new Error('Cannot remove a GL head that has transactions recorded in this month.');
   }
 
-  const headIds = current.selectedHeadIds.filter(id => id !== headId);
+  let baseHeadIds = current.selectedHeadIds;
+  let baseCategoryIds = current.selectedCategoryIds;
+
+  if (!current.hasSavedPreferences) {
+    baseHeadIds = current.availableHeads.map((h) => h.id);
+    const allCats = getCategories(undefined, undefined, userId);
+    baseCategoryIds = allCats.map((c) => c.id);
+  }
+
+  const headIds = baseHeadIds.filter((id) => id !== headId);
   const db = getDb();
   const subCats = db.prepare(`
     SELECT id FROM categories WHERE head_id = ?
   `).all(headId) as { id: number }[];
-  const subCatIdSet = new Set(subCats.map(c => c.id));
+  const subCatIdSet = new Set(subCats.map((c) => c.id));
 
-  const categoryIds = current.selectedCategoryIds.filter(id => !subCatIdSet.has(id));
+  const categoryIds = baseCategoryIds.filter((id) => !subCatIdSet.has(id));
   return saveMonthlyWorksheetGlPreferences({ bookId, monthStr, userId, headIds, categoryIds });
 }
 
@@ -1176,6 +1936,7 @@ export function getMonthlyWorksheetData(bookId: number, year: number, month: num
 
   // 9. Group rows by category group_name in customized GL Head order
   const categoriesByGroup: { [group: string]: CategoryWorksheetRow[] } = {};
+  const groupHeadMap = new Map<string, { headId?: number; icon?: string; color?: string }>();
 
   // Initialize groups in the exact order of glPrefs.selectedHeadIds
   const headMap = new Map<number, CategoryHead>();
@@ -1185,6 +1946,7 @@ export function getMonthlyWorksheetData(bookId: number, year: number, month: num
     const head = headMap.get(hId);
     if (head && !categoriesByGroup[head.name]) {
       categoriesByGroup[head.name] = [];
+      groupHeadMap.set(head.name, { headId: head.id, icon: head.icon, color: head.color });
     }
   }
 
@@ -1194,14 +1956,27 @@ export function getMonthlyWorksheetData(bookId: number, year: number, month: num
     const grp = head ? head.name : (row.category.group_name || 'Other');
     if (!categoriesByGroup[grp]) {
       categoriesByGroup[grp] = [];
+      if (head) {
+        groupHeadMap.set(grp, { headId: head.id, icon: head.icon, color: head.color });
+      }
     }
     categoriesByGroup[grp].push(row);
   }
 
-  // Prune any empty initialized groups
+  // Prune any empty initialized groups and create groups array
+  const groups: WorksheetGroupSection[] = [];
   for (const grp of Object.keys(categoriesByGroup)) {
     if (categoriesByGroup[grp].length === 0) {
       delete categoriesByGroup[grp];
+    } else {
+      const meta = groupHeadMap.get(grp);
+      groups.push({
+        headId: meta?.headId,
+        name: grp,
+        icon: meta?.icon,
+        color: meta?.color,
+        rows: categoriesByGroup[grp],
+      });
     }
   }
 
@@ -1213,6 +1988,7 @@ export function getMonthlyWorksheetData(bookId: number, year: number, month: num
     book,
     masterCurrency,
     categoriesByGroup,
+    groups,
     dailySummaries,
     monthTotals: {
       totalExpenses: grandTotalExpenses,
@@ -1224,7 +2000,7 @@ export function getMonthlyWorksheetData(bookId: number, year: number, month: num
       endingCash: currentCash,
     },
     hasSavedGlPreferences: glPrefs.hasSavedPreferences,
-    activeHeadCount: Object.keys(categoriesByGroup).length,
+    activeHeadCount: groups.length,
     totalAvailableHeads: glPrefs.availableHeads.length,
     activeHeadIds: glPrefs.selectedHeadIds,
   };
@@ -1543,9 +2319,18 @@ export function getExpenseDashboardData(params: {
     count: number;
   }[];
 
+    // Load category budgets for this month if single book
+    const catBudgetMap = new Map<number, number>();
+    if (!isConsolidated && selectedBookId && period === 'month') {
+      const bRows = db.prepare('SELECT category_id, amount FROM budgets WHERE book_id = ? AND month = ?').all(selectedBookId, monthStr) as { category_id: number; amount: number }[];
+      bRows.forEach(b => catBudgetMap.set(b.category_id, b.amount));
+    }
+
   const categoryBreakdown: CategoryExpenseBreakdown[] = catRows.map(r => {
     const pct = totalExpenses > 0 ? (r.total_amount / totalExpenses) * 100 : 0;
     const avg = r.count > 0 ? r.total_amount / r.count : 0;
+    const bAmt = catBudgetMap.get(r.category_id) || 0;
+    const vAmt = bAmt > 0 ? bAmt - r.total_amount : 0;
     return {
       categoryId: r.category_id,
       categoryName: r.category_name,
@@ -1560,13 +2345,13 @@ export function getExpenseDashboardData(params: {
       percentOfTotal: pct,
       count: r.count,
       avgAmount: avg,
-      budget: 0,
-      variance: 0,
+      budget: bAmt,
+      variance: vAmt,
     };
   });
 
   // 4b. Category Heads Breakdown (Tata Neu Super-App Launcher)
-  const allHeads = getCategoryHeads();
+  const allHeads = getCategoryHeads(params.userId);
   const headMap = new Map<number, { headId: number; headName: string; headIcon: string; headColor: string; totalAmount: number; count: number }>();
   for (const h of allHeads) {
     headMap.set(h.id, {
@@ -1829,3 +2614,1084 @@ export function getExpenseDashboardData(params: {
     availableYears,
   };
 }
+
+// =========================================================
+// RECURRING TRANSACTIONS & RECURRING INCOME ENGINE
+// =========================================================
+
+export function calculateNextDueDate(
+  frequency: RecurringFrequency,
+  fromDateStr: string,
+  dayOfMonth?: number,
+  dayOfWeek?: number
+): string {
+  const [year, month, day] = fromDateStr.split('-').map(Number);
+  const date = new Date(year, month - 1, day);
+
+  if (frequency === 'daily') {
+    date.setDate(date.getDate() + 1);
+  } else if (frequency === 'weekly') {
+    date.setDate(date.getDate() + 7);
+  } else if (frequency === 'biweekly') {
+    date.setDate(date.getDate() + 14);
+  } else if (frequency === 'monthly') {
+    date.setMonth(date.getMonth() + 1);
+    if (dayOfMonth) {
+      const maxDays = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+      date.setDate(Math.min(dayOfMonth, maxDays));
+    }
+  } else if (frequency === 'quarterly') {
+    date.setMonth(date.getMonth() + 3);
+    if (dayOfMonth) {
+      const maxDays = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+      date.setDate(Math.min(dayOfMonth, maxDays));
+    }
+  } else if (frequency === 'yearly') {
+    date.setFullYear(date.getFullYear() + 1);
+    if (dayOfMonth) {
+      const maxDays = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+      date.setDate(Math.min(dayOfMonth, maxDays));
+    }
+  }
+
+  return formatDateISO(date.getFullYear(), date.getMonth() + 1, date.getDate());
+}
+
+export function getRecurringTransactions(userId?: number, bookId?: number, type?: string): RecurringTransaction[] {
+  const db = getDb();
+  let query = `
+    SELECT r.*, b.name as book_name, a.name as account_name,
+           c.name as category_name, curr.symbol as currency_symbol,
+           to_acc.name as to_account_name
+    FROM recurring_transactions r
+    JOIN account_books b ON r.book_id = b.id
+    JOIN accounts a ON r.account_id = a.id
+    LEFT JOIN categories c ON r.category_id = c.id
+    LEFT JOIN accounts to_acc ON r.to_account_id = to_acc.id
+    LEFT JOIN currencies curr ON r.currency_code = curr.code
+    WHERE 1=1
+  `;
+  const params: (string | number)[] = [];
+  if (userId) {
+    query += ' AND (r.user_id = ? OR r.user_id IS NULL)';
+    params.push(userId);
+  }
+  if (bookId) {
+    query += ' AND r.book_id = ?';
+    params.push(bookId);
+  }
+  if (type) {
+    query += ' AND r.type = ?';
+    params.push(type);
+  }
+  query += ' ORDER BY r.is_active DESC, r.next_due_date ASC, r.name ASC';
+  return db.prepare(query).all(...params) as unknown as RecurringTransaction[];
+}
+
+export function getRecurringTransactionById(id: number, userId?: number): RecurringTransaction | null {
+  const db = getDb();
+  let query = `
+    SELECT r.*, b.name as book_name, a.name as account_name,
+           c.name as category_name, curr.symbol as currency_symbol,
+           to_acc.name as to_account_name
+    FROM recurring_transactions r
+    JOIN account_books b ON r.book_id = b.id
+    JOIN accounts a ON r.account_id = a.id
+    LEFT JOIN categories c ON r.category_id = c.id
+    LEFT JOIN accounts to_acc ON r.to_account_id = to_acc.id
+    LEFT JOIN currencies curr ON r.currency_code = curr.code
+    WHERE r.id = ?
+  `;
+  const params: (string | number)[] = [id];
+  if (userId) {
+    query += ' AND (r.user_id = ? OR r.user_id IS NULL)';
+    params.push(userId);
+  }
+  const row = db.prepare(query).get(...params) as unknown as RecurringTransaction | undefined;
+  return row || null;
+}
+
+export function createRecurringTransaction(data: {
+  user_id?: number;
+  book_id: number;
+  account_id: number;
+  category_id?: number | null;
+  type?: TransactionType;
+  to_account_id?: number | null;
+  name: string;
+  amount: number;
+  currency_code?: string;
+  frequency: RecurringFrequency;
+  day_of_month?: number;
+  day_of_week?: number;
+  start_date: string;
+  end_date?: string | null;
+  payer_merchant?: string | null;
+  description?: string | null;
+  auto_post?: number;
+  is_active?: number;
+}): RecurringTransaction {
+  const db = getDb();
+  const acc = db.prepare('SELECT currency_code FROM accounts WHERE id = ?').get(data.account_id) as { currency_code: string } | undefined;
+  const currencyCode = data.currency_code || acc?.currency_code || 'INR';
+
+  const nextDue = data.start_date;
+
+  const res = db.prepare(`
+    INSERT INTO recurring_transactions (
+      user_id, book_id, account_id, category_id, type, to_account_id,
+      name, amount, currency_code, frequency, day_of_month, day_of_week,
+      start_date, end_date, next_due_date, payer_merchant, description,
+      auto_post, is_active
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    data.user_id || null,
+    data.book_id,
+    data.account_id,
+    data.category_id || null,
+    data.type || 'income',
+    data.to_account_id || null,
+    data.name.trim(),
+    data.amount,
+    currencyCode,
+    data.frequency || 'monthly',
+    data.day_of_month || 1,
+    data.day_of_week || 1,
+    data.start_date,
+    data.end_date || null,
+    nextDue,
+    data.payer_merchant || null,
+    data.description || null,
+    data.auto_post || 0,
+    data.is_active !== undefined ? data.is_active : 1
+  );
+
+  return getRecurringTransactionById(Number(res.lastInsertRowid), data.user_id)!;
+}
+
+export function updateRecurringTransaction(
+  id: number,
+  data: Partial<{
+    book_id: number;
+    account_id: number;
+    category_id: number | null;
+    type: TransactionType;
+    to_account_id: number | null;
+    name: string;
+    amount: number;
+    currency_code: string;
+    frequency: RecurringFrequency;
+    day_of_month: number;
+    day_of_week: number;
+    start_date: string;
+    end_date: string | null;
+    next_due_date: string;
+    payer_merchant: string | null;
+    description: string | null;
+    auto_post: number;
+    is_active: number;
+  }>,
+  userId?: number
+): RecurringTransaction {
+  const db = getDb();
+  const current = getRecurringTransactionById(id, userId);
+  if (!current) throw new Error('Recurring transaction not found');
+
+  db.prepare(`
+    UPDATE recurring_transactions
+    SET book_id = ?,
+        account_id = ?,
+        category_id = ?,
+        type = ?,
+        to_account_id = ?,
+        name = ?,
+        amount = ?,
+        currency_code = ?,
+        frequency = ?,
+        day_of_month = ?,
+        day_of_week = ?,
+        start_date = ?,
+        end_date = ?,
+        next_due_date = ?,
+        payer_merchant = ?,
+        description = ?,
+        auto_post = ?,
+        is_active = ?
+    WHERE id = ?
+  `).run(
+    data.book_id !== undefined ? data.book_id : current.book_id,
+    data.account_id !== undefined ? data.account_id : current.account_id,
+    data.category_id !== undefined ? (data.category_id ?? null) : (current.category_id ?? null),
+    data.type !== undefined ? data.type : current.type,
+    data.to_account_id !== undefined ? (data.to_account_id ?? null) : (current.to_account_id ?? null),
+    data.name !== undefined ? data.name.trim() : current.name,
+    data.amount !== undefined ? data.amount : current.amount,
+    data.currency_code !== undefined ? data.currency_code : current.currency_code,
+    data.frequency !== undefined ? data.frequency : current.frequency,
+    data.day_of_month !== undefined ? (data.day_of_month ?? null) : (current.day_of_month ?? null),
+    data.day_of_week !== undefined ? (data.day_of_week ?? null) : (current.day_of_week ?? null),
+    data.start_date !== undefined ? data.start_date : current.start_date,
+    data.end_date !== undefined ? (data.end_date ?? null) : (current.end_date ?? null),
+    data.next_due_date !== undefined ? (data.next_due_date ?? null) : (current.next_due_date ?? null),
+    data.payer_merchant !== undefined ? (data.payer_merchant ?? null) : (current.payer_merchant ?? null),
+    data.description !== undefined ? (data.description ?? null) : (current.description ?? null),
+    data.auto_post !== undefined ? data.auto_post : (current.auto_post ?? 0),
+    data.is_active !== undefined ? data.is_active : current.is_active,
+    id
+  );
+
+  return getRecurringTransactionById(id, userId)!;
+}
+
+export function deleteRecurringTransaction(id: number, userId?: number): void {
+  const db = getDb();
+  let query = 'DELETE FROM recurring_transactions WHERE id = ?';
+  const params: (string | number)[] = [id];
+  if (userId) {
+    query += ' AND (user_id = ? OR user_id IS NULL)';
+    params.push(userId);
+  }
+  db.prepare(query).run(...params);
+}
+
+export function processRecurringTransaction(id: number, postDate?: string, userId?: number): {
+  success: boolean;
+  transaction: Transaction;
+  nextDueDate: string;
+} {
+  const db = getDb();
+  const item = getRecurringTransactionById(id, userId);
+  if (!item) throw new Error('Recurring item not found');
+
+  const executionDate = postDate || item.next_due_date || formatDateISO(new Date().getFullYear(), new Date().getMonth() + 1, new Date().getDate());
+
+  // Determine payment method based on account type
+  const acc = db.prepare('SELECT type FROM accounts WHERE id = ?').get(item.account_id) as { type: string } | undefined;
+  const pm: PaymentMethod = acc?.type === 'cash' ? 'cash' : acc?.type === 'credit_card' ? 'credit_card' : 'debit_card';
+
+  // Create the actual transaction
+  const tx = createTransaction({
+    book_id: item.book_id,
+    date: executionDate,
+    amount: item.amount,
+    category_id: item.category_id,
+    account_id: item.account_id,
+    payment_method: pm,
+    type: item.type,
+    to_account_id: item.to_account_id,
+    description: item.description || `${item.name} (${item.frequency})`,
+    merchant: item.payer_merchant || undefined,
+  });
+
+  // Calculate next due date
+  const nextDue = calculateNextDueDate(item.frequency, executionDate, item.day_of_month, item.day_of_week);
+
+  db.prepare(`
+    UPDATE recurring_transactions
+    SET last_processed_date = ?, next_due_date = ?
+    WHERE id = ?
+  `).run(executionDate, nextDue, id);
+
+  return {
+    success: true,
+    transaction: tx,
+    nextDueDate: nextDue,
+  };
+}
+
+// =========================================================
+// INCOME & INFLOW QUERIES ENGINE
+// =========================================================
+
+export function toggleHandLoanRepayment(
+  id: number,
+  status: 'pending' | 'repaid',
+  userId?: number
+): Transaction | null {
+  const db = getDb();
+  const tx = getTransactionById(id, userId);
+  if (!tx) return null;
+  db.prepare('UPDATE transactions SET repayment_status = ? WHERE id = ?').run(status, id);
+  return getTransactionById(id, userId);
+}
+
+export function updateTransaction(
+  id: number,
+  data: {
+    book_id?: number;
+    date?: string;
+    amount?: number;
+    category_id?: number | null;
+    account_id?: number;
+    payment_method?: PaymentMethod;
+    type?: TransactionType;
+    to_account_id?: number | null;
+    description?: string;
+    merchant?: string;
+    notes?: string;
+    income_type?: IncomeType | string;
+    income_category?: string;
+    repayment_due_date?: string;
+    repayment_status?: string;
+  },
+  userId?: number
+): Transaction | null {
+  const db = getDb();
+  const tx = getTransactionById(id, userId);
+  if (!tx) return null;
+
+  db.exec('BEGIN TRANSACTION;');
+  try {
+    const newAmount = data.amount !== undefined ? data.amount : tx.amount;
+    const newAccountId = data.account_id !== undefined ? data.account_id : tx.account_id;
+    const newType = data.type || tx.type;
+    const newToAccountId = data.to_account_id !== undefined ? data.to_account_id : tx.to_account_id;
+
+    const account = db.prepare('SELECT currency_code FROM accounts WHERE id = ?').get(newAccountId) as { currency_code: string } | undefined;
+    const currencyCode = account?.currency_code || tx.currency_code;
+    const curr = db.prepare('SELECT exchange_rate_to_master FROM currencies WHERE code = ?').get(currencyCode) as { exchange_rate_to_master: number } | undefined;
+    const rate = curr?.exchange_rate_to_master || 1.0;
+    const masterAmount = newAmount * rate;
+
+    const balanceAffected =
+      newAmount !== tx.amount ||
+      newAccountId !== tx.account_id ||
+      newType !== tx.type ||
+      newToAccountId !== tx.to_account_id;
+
+    if (balanceAffected) {
+      // Revert old effect
+      if (tx.type === 'expense') {
+        db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(tx.amount, tx.account_id);
+      } else if (tx.type === 'income') {
+        db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(tx.amount, tx.account_id);
+      } else if (tx.type === 'bank_withdrawal' || tx.type === 'card_settlement') {
+        db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(tx.amount, tx.account_id);
+        if (tx.to_account_id) {
+          db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(tx.amount, tx.to_account_id);
+        }
+      } else if (tx.type === 'transfer') {
+        db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(tx.amount, tx.account_id);
+        if (tx.to_account_id) {
+          const toAcc = db.prepare('SELECT currency_code FROM accounts WHERE id = ?').get(tx.to_account_id) as { currency_code: string } | undefined;
+          let creditAmount = tx.amount;
+          if (toAcc && toAcc.currency_code !== tx.currency_code) {
+            const toCurr = db.prepare('SELECT exchange_rate_to_master FROM currencies WHERE code = ?').get(toAcc.currency_code) as { exchange_rate_to_master: number } | undefined;
+            const toRate = toCurr?.exchange_rate_to_master || 1.0;
+            const fromRate = tx.exchange_rate_to_master || 1.0;
+            if (toRate > 0) {
+              creditAmount = Number(((tx.amount * fromRate) / toRate).toFixed(2));
+            }
+          }
+          db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(creditAmount, tx.to_account_id);
+        }
+      }
+
+      // Apply new effect
+      if (newType === 'expense') {
+        db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(newAmount, newAccountId);
+      } else if (newType === 'income') {
+        db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(newAmount, newAccountId);
+      } else if (newType === 'bank_withdrawal' || newType === 'card_settlement') {
+        db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(newAmount, newAccountId);
+        if (newToAccountId) {
+          db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(newAmount, newToAccountId);
+        }
+      } else if (newType === 'transfer') {
+        db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(newAmount, newAccountId);
+        if (newToAccountId) {
+          const toAcc = db.prepare('SELECT currency_code FROM accounts WHERE id = ?').get(newToAccountId) as { currency_code: string } | undefined;
+          let creditAmount = newAmount;
+          if (toAcc && toAcc.currency_code !== currencyCode) {
+            const toCurr = db.prepare('SELECT exchange_rate_to_master FROM currencies WHERE code = ?').get(toAcc.currency_code) as { exchange_rate_to_master: number } | undefined;
+            const toRate = toCurr?.exchange_rate_to_master || 1.0;
+            if (toRate > 0) {
+              creditAmount = Number(((newAmount * rate) / toRate).toFixed(2));
+            }
+          }
+          db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(creditAmount, newToAccountId);
+        }
+      }
+    }
+
+    db.prepare(`
+      UPDATE transactions
+      SET book_id = COALESCE(?, book_id),
+          date = COALESCE(?, date),
+          amount = ?,
+          currency_code = ?,
+          exchange_rate_to_master = ?,
+          amount_master_currency = ?,
+          account_id = ?,
+          to_account_id = ?,
+          category_id = ?,
+          payment_method = COALESCE(?, payment_method),
+          type = ?,
+          description = ?,
+          merchant = ?,
+          notes = ?,
+          income_type = COALESCE(?, income_type),
+          income_category = COALESCE(?, income_category),
+          repayment_due_date = ?,
+          repayment_status = COALESCE(?, repayment_status)
+      WHERE id = ?
+    `).run(
+      data.book_id || null,
+      data.date || null,
+      newAmount,
+      currencyCode,
+      rate,
+      masterAmount,
+      newAccountId,
+      newToAccountId ?? null,
+      (data.category_id !== undefined ? data.category_id : tx.category_id) ?? null,
+      data.payment_method || null,
+      newType,
+      (data.description !== undefined ? data.description : tx.description) ?? null,
+      (data.merchant !== undefined ? data.merchant : tx.merchant) ?? null,
+      (data.notes !== undefined ? data.notes : tx.notes) ?? null,
+      data.income_type || null,
+      data.income_category || null,
+      (data.repayment_due_date !== undefined ? data.repayment_due_date : tx.repayment_due_date) ?? null,
+      data.repayment_status || null,
+      id
+    );
+
+    db.exec('COMMIT;');
+    return getTransactionById(id, userId);
+  } catch (e) {
+    db.exec('ROLLBACK;');
+    throw e;
+  }
+}
+
+export function getIncomeDashboardData(params: {
+  bookId?: number | 'all';
+  year: number;
+  month?: number | null;
+  incomeType?: string;
+  repaymentStatus?: string;
+  search?: string;
+  userId?: number;
+}): IncomeDashboardData {
+  const db = getDb();
+  const books = getAccountBooks(params.userId);
+  const masterCurrency = getMasterCurrency();
+
+  const isConsolidated = params.bookId === 'all';
+  let activeBook = books[0];
+  if (!isConsolidated && params.bookId) {
+    const found = books.find((b) => b.id === Number(params.bookId));
+    if (found) activeBook = found;
+  }
+
+  const currency = isConsolidated
+    ? masterCurrency
+    : {
+        code: activeBook?.currency_code || 'INR',
+        symbol: activeBook?.currency_symbol || '₹',
+        name: activeBook?.name || 'Account Book',
+      };
+
+  const monthNum = params.month ? Number(params.month) : null;
+  const monthName = monthNum ? getMonthName(monthNum) : 'Full Year';
+  const monthPrefix = monthNum ? `${params.year}-${String(monthNum).padStart(2, '0')}` : `${params.year}`;
+
+  let allIncomeQuery = `
+    SELECT t.*,
+           a.name as account_name, a.type as account_type,
+           curr.symbol as currency_symbol, b.name as book_name
+    FROM transactions t
+    LEFT JOIN accounts a ON t.account_id = a.id
+    LEFT JOIN currencies curr ON t.currency_code = curr.code
+    LEFT JOIN account_books b ON t.book_id = b.id
+    WHERE t.type = 'income'
+  `;
+  const qParams: (string | number)[] = [];
+  if (params.userId) {
+    allIncomeQuery += ' AND b.user_id = ?';
+    qParams.push(params.userId);
+  }
+  if (!isConsolidated && activeBook) {
+    allIncomeQuery += ' AND t.book_id = ?';
+    qParams.push(activeBook.id);
+  }
+  allIncomeQuery += ' AND t.date LIKE ?';
+  qParams.push(`${monthPrefix}%`);
+
+  if (params.incomeType) {
+    allIncomeQuery += ' AND t.income_type = ?';
+    qParams.push(params.incomeType);
+  }
+  if (params.repaymentStatus) {
+    allIncomeQuery += ' AND t.repayment_status = ?';
+    qParams.push(params.repaymentStatus);
+  }
+  if (params.search && params.search.trim()) {
+    const term = `%${params.search.trim()}%`;
+    allIncomeQuery += ` AND (
+      t.description LIKE ? OR
+      t.merchant LIKE ? OR
+      t.income_category LIKE ? OR
+      t.notes LIKE ? OR
+      a.name LIKE ?
+    )`;
+    qParams.push(term, term, term, term, term);
+  }
+  allIncomeQuery += ' ORDER BY t.date DESC, t.id DESC';
+
+  const periodTxs = db.prepare(allIncomeQuery).all(...qParams) as unknown as Transaction[];
+
+  let totalIncome = 0;
+  let totalIncomeMaster = 0;
+  let totalHandLoans = 0;
+  let pendingHandLoansTotal = 0;
+  let pendingHandLoansCount = 0;
+  let repaidHandLoansTotal = 0;
+  let totalFarmIncome = 0;
+  let totalStockCapital = 0;
+  let totalInterest = 0;
+  let totalInvestment = 0;
+  let totalSalary = 0;
+  let totalOther = 0;
+
+  for (const tx of periodTxs) {
+    const amt = isConsolidated ? tx.amount_master_currency : tx.amount;
+    totalIncome += amt;
+    totalIncomeMaster += tx.amount_master_currency;
+
+    const itype = tx.income_type || 'other';
+    if (itype === 'petty_hand_loan') {
+      totalHandLoans += amt;
+      if (tx.repayment_status === 'repaid') {
+        repaidHandLoansTotal += amt;
+      } else {
+        pendingHandLoansTotal += amt;
+        pendingHandLoansCount += 1;
+      }
+    } else if (itype === 'farm') {
+      totalFarmIncome += amt;
+    } else if (itype === 'stock_capital') {
+      totalStockCapital += amt;
+    } else if (itype === 'interest') {
+      totalInterest += amt;
+    } else if (itype === 'investment') {
+      totalInvestment += amt;
+    } else if (itype === 'salary') {
+      totalSalary += amt;
+    } else {
+      totalOther += amt;
+    }
+  }
+
+  const transactionCount = periodTxs.length;
+  const avgIncomeTransaction = transactionCount > 0 ? totalIncome / transactionCount : 0;
+
+  const summary: IncomeSummary = {
+    totalIncome,
+    totalIncomeMaster,
+    transactionCount,
+    avgIncomeTransaction,
+    totalHandLoans,
+    pendingHandLoansTotal,
+    pendingHandLoansCount,
+    repaidHandLoansTotal,
+    totalFarmIncome,
+    totalStockCapital,
+    totalInterest,
+    totalInvestment,
+    totalSalary,
+    totalOther,
+    currency: {
+      code: currency.code,
+      symbol: currency.symbol,
+      name: currency.name,
+    },
+  };
+
+  const typeMap = new Map<string, { amount: number; masterAmount: number; count: number }>();
+  for (const tx of periodTxs) {
+    const itype = tx.income_type || 'other';
+    const amt = isConsolidated ? tx.amount_master_currency : tx.amount;
+    const existing = typeMap.get(itype) || { amount: 0, masterAmount: 0, count: 0 };
+    existing.amount += amt;
+    existing.masterAmount += tx.amount_master_currency;
+    existing.count += 1;
+    typeMap.set(itype, existing);
+  }
+
+  const activeDefs = getIncomeTypes(params.userId);
+  const typeBreakdown: IncomeTypeBreakdown[] = activeDefs.map((def) => {
+    const data = typeMap.get(def.type) || { amount: 0, masterAmount: 0, count: 0 };
+    return {
+      type: def.type as IncomeType,
+      label: def.label,
+      icon: def.icon,
+      color: def.color,
+      totalAmount: data.amount,
+      totalMasterAmount: data.masterAmount,
+      percentOfTotal: totalIncome > 0 ? (data.amount / totalIncome) * 100 : 0,
+      count: data.count,
+    };
+  }).filter(
+    (tb) =>
+      tb.totalAmount > 0 ||
+      tb.count > 0 ||
+      activeDefs.find((d) => d.type === tb.type)?.is_active !== 0
+  );
+
+  typeBreakdown.sort((a, b) => b.totalAmount - a.totalAmount);
+
+  let yearTrendQuery = `
+    SELECT 
+      strftime('%m', t.date) as m_str,
+      COALESCE(SUM(CASE WHEN ? = 1 THEN t.amount_master_currency ELSE t.amount END), 0) as total,
+      COALESCE(SUM(CASE WHEN t.income_type = 'petty_hand_loan' THEN (CASE WHEN ? = 1 THEN t.amount_master_currency ELSE t.amount END) ELSE 0 END), 0) as hand_loans,
+      COALESCE(SUM(CASE WHEN t.income_type = 'farm' THEN (CASE WHEN ? = 1 THEN t.amount_master_currency ELSE t.amount END) ELSE 0 END), 0) as farm,
+      COALESCE(SUM(CASE WHEN t.income_type = 'stock_capital' THEN (CASE WHEN ? = 1 THEN t.amount_master_currency ELSE t.amount END) ELSE 0 END), 0) as stock_capital,
+      COALESCE(SUM(CASE WHEN t.income_type = 'interest' THEN (CASE WHEN ? = 1 THEN t.amount_master_currency ELSE t.amount END) ELSE 0 END), 0) as interest,
+      COALESCE(SUM(CASE WHEN t.income_type = 'investment' THEN (CASE WHEN ? = 1 THEN t.amount_master_currency ELSE t.amount END) ELSE 0 END), 0) as investment,
+      COALESCE(SUM(CASE WHEN t.income_type = 'salary' THEN (CASE WHEN ? = 1 THEN t.amount_master_currency ELSE t.amount END) ELSE 0 END), 0) as salary,
+      COALESCE(SUM(CASE WHEN t.income_type NOT IN ('petty_hand_loan', 'farm', 'stock_capital', 'interest', 'investment', 'salary') OR t.income_type IS NULL THEN (CASE WHEN ? = 1 THEN t.amount_master_currency ELSE t.amount END) ELSE 0 END), 0) as other,
+      COUNT(t.id) as count
+    FROM transactions t
+    LEFT JOIN account_books b ON t.book_id = b.id
+    WHERE t.type = 'income' AND t.date LIKE ?
+  `;
+  const ytParams: (string | number)[] = [
+    isConsolidated ? 1 : 0,
+    isConsolidated ? 1 : 0,
+    isConsolidated ? 1 : 0,
+    isConsolidated ? 1 : 0,
+    isConsolidated ? 1 : 0,
+    isConsolidated ? 1 : 0,
+    isConsolidated ? 1 : 0,
+    isConsolidated ? 1 : 0,
+    `${params.year}%`,
+  ];
+  if (params.userId) {
+    yearTrendQuery += ' AND b.user_id = ?';
+    ytParams.push(params.userId);
+  }
+  if (!isConsolidated && activeBook) {
+    yearTrendQuery += ' AND t.book_id = ?';
+    ytParams.push(activeBook.id);
+  }
+  yearTrendQuery += " GROUP BY strftime('%m', t.date)";
+
+  const trendRows = db.prepare(yearTrendQuery).all(...ytParams) as {
+    m_str: string;
+    total: number;
+    hand_loans: number;
+    farm: number;
+    stock_capital: number;
+    interest: number;
+    investment: number;
+    salary: number;
+    other: number;
+    count: number;
+  }[];
+
+  const trendMap = new Map<number, (typeof trendRows)[0]>();
+  trendRows.forEach((r) => trendMap.set(parseInt(r.m_str, 10), r));
+
+  const monthlyTrend: IncomeMonthlyTrendItem[] = [];
+  for (let m = 1; m <= 12; m++) {
+    const row = trendMap.get(m);
+    monthlyTrend.push({
+      month: m,
+      monthStr: getMonthName(m).slice(0, 3),
+      yearMonth: `${params.year}-${String(m).padStart(2, '0')}`,
+      totalIncome: row?.total || 0,
+      handLoanIncome: row?.hand_loans || 0,
+      farmIncome: row?.farm || 0,
+      stockCapitalIncome: row?.stock_capital || 0,
+      interestIncome: row?.interest || 0,
+      investmentIncome: row?.investment || 0,
+      salaryIncome: row?.salary || 0,
+      otherIncome: row?.other || 0,
+      count: row?.count || 0,
+    });
+  }
+
+  let handLoansQuery = `
+    SELECT t.*, a.name as account_name, curr.symbol as currency_symbol, b.name as book_name
+    FROM transactions t
+    LEFT JOIN accounts a ON t.account_id = a.id
+    LEFT JOIN currencies curr ON t.currency_code = curr.code
+    LEFT JOIN account_books b ON t.book_id = b.id
+    WHERE t.type = 'income' AND t.income_type = 'petty_hand_loan'
+  `;
+  const hlParams: (string | number)[] = [];
+  if (params.userId) {
+    handLoansQuery += ' AND b.user_id = ?';
+    hlParams.push(params.userId);
+  }
+  if (!isConsolidated && activeBook) {
+    handLoansQuery += ' AND t.book_id = ?';
+    hlParams.push(activeBook.id);
+  }
+  handLoansQuery += " ORDER BY CASE WHEN t.repayment_status = 'pending' THEN 0 ELSE 1 END ASC, t.date DESC LIMIT 50";
+
+  const rawHandLoans = db.prepare(handLoansQuery).all(...hlParams) as unknown as Transaction[];
+  const handLoans: PettyHandLoanItem[] = rawHandLoans.map((hl) => ({
+    id: hl.id,
+    bookId: hl.book_id,
+    bookName: hl.book_name,
+    friendName: hl.merchant || 'Friend',
+    amount: hl.amount,
+    currencyCode: hl.currency_code,
+    currencySymbol: hl.currency_symbol,
+    dateBorrowed: hl.date,
+    repaymentDueDate: hl.repayment_due_date || undefined,
+    repaymentStatus: (hl.repayment_status as 'pending' | 'repaid') || 'pending',
+    description: hl.description,
+    notes: hl.notes,
+    accountName: hl.account_name,
+    accountId: hl.account_id,
+  }));
+
+  const accMap = new Map<number, { name: string; type: string; amount: number; count: number }>();
+  for (const tx of periodTxs) {
+    const amt = isConsolidated ? tx.amount_master_currency : tx.amount;
+    const existing = accMap.get(tx.account_id) || {
+      name: tx.account_name || 'Account',
+      type: tx.account_type || 'bank',
+      amount: 0,
+      count: 0,
+    };
+    existing.amount += amt;
+    existing.count += 1;
+    accMap.set(tx.account_id, existing);
+  }
+
+  const accountBreakdown = Array.from(accMap.entries())
+    .map(([accountId, val]) => ({
+      accountId,
+      accountName: val.name,
+      accountType: val.type,
+      amount: val.amount,
+      percent: totalIncome > 0 ? (val.amount / totalIncome) * 100 : 0,
+      count: val.count,
+    }))
+    .sort((a, b) => b.amount - a.amount);
+
+  const yearRows = db.prepare(`
+    SELECT DISTINCT strftime('%Y', date) as y
+    FROM transactions
+    WHERE type = 'income' AND date IS NOT NULL
+  `).all() as { y: string }[];
+  const yearSet = new Set<number>([new Date().getFullYear(), params.year]);
+  yearRows.forEach((r) => {
+    const y = parseInt(r.y, 10);
+    if (!isNaN(y)) yearSet.add(y);
+  });
+  const availableYears = Array.from(yearSet).sort((a, b) => b - a);
+
+  return {
+    bookId: params.bookId || activeBook?.id || 1,
+    bookName: isConsolidated ? 'Consolidated Master Books' : activeBook?.name || 'Account Book',
+    isConsolidated,
+    year: params.year,
+    month: monthNum,
+    monthName,
+    summary,
+    typeBreakdown,
+    monthlyTrend,
+    handLoans,
+    recentIncomes: periodTxs.slice(0, 100),
+    accountBreakdown,
+    availableYears,
+  };
+}
+
+// =========================================================
+// CONFIGURABLE INCOME TYPES MANAGEMENT ENGINE
+// =========================================================
+
+interface RawIncomeTypeRow {
+  id: number;
+  user_id: number | null;
+  type_key: string;
+  label: string;
+  short_label: string;
+  icon: string;
+  color: string;
+  description: string | null;
+  payer_label: string | null;
+  payer_placeholder: string | null;
+  description_placeholder: string | null;
+  subcategories: string | null;
+  sort_order: number;
+  is_active: number;
+  created_at: string;
+}
+
+function parseIncomeTypeRow(row: RawIncomeTypeRow): IncomeStreamDefinition {
+  let categories: string[] = [];
+  if (row.subcategories) {
+    try {
+      categories = JSON.parse(row.subcategories);
+    } catch {
+      categories = [];
+    }
+  }
+  return {
+    id: row.id,
+    user_id: row.user_id || undefined,
+    type: row.type_key,
+    label: row.label,
+    shortLabel: row.short_label,
+    icon: row.icon,
+    color: row.color,
+    description: row.description || '',
+    defaultCategories: Array.isArray(categories) ? categories : [],
+    payerLabel: row.payer_label || 'Payer / Source',
+    payerPlaceholder: row.payer_placeholder || 'e.g. Source name',
+    descriptionPlaceholder: row.description_placeholder || 'e.g. Income details',
+    sort_order: row.sort_order,
+    is_active: row.is_active,
+  };
+}
+
+export function seedDefaultIncomeTypesForUser(userId: number): void {
+  const db = getDb();
+  const insertStmt = db.prepare(`
+    INSERT INTO income_types (
+      user_id, type_key, label, short_label, icon, color, description,
+      payer_label, payer_placeholder, description_placeholder,
+      subcategories, sort_order, is_active
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+  `);
+
+  db.exec('BEGIN TRANSACTION;');
+  try {
+    INCOME_STREAM_DEFINITIONS.forEach((def, index) => {
+      insertStmt.run(
+        userId,
+        def.type,
+        def.label,
+        def.shortLabel,
+        def.icon,
+        def.color,
+        def.description,
+        def.payerLabel,
+        def.payerPlaceholder,
+        def.descriptionPlaceholder,
+        JSON.stringify(def.defaultCategories),
+        index + 1
+      );
+    });
+    db.exec('COMMIT;');
+  } catch (e) {
+    db.exec('ROLLBACK;');
+    console.error('Failed to seed default income types for user:', e);
+  }
+}
+
+export function getIncomeTypes(userId?: number): IncomeStreamDefinition[] {
+  const db = getDb();
+  let query = 'SELECT * FROM income_types';
+  const params: (string | number)[] = [];
+  if (userId) {
+    query += ' WHERE (user_id = ? OR user_id IS NULL)';
+    params.push(userId);
+  }
+  query += ' ORDER BY sort_order ASC, id ASC';
+
+  let rows = db.prepare(query).all(...params) as unknown as RawIncomeTypeRow[];
+
+  // If user has no income types configured yet, seed defaults from INCOME_STREAM_DEFINITIONS
+  if (rows.length === 0 && userId) {
+    seedDefaultIncomeTypesForUser(userId);
+    rows = db.prepare(query).all(...params) as unknown as RawIncomeTypeRow[];
+  }
+
+  if (rows.length === 0) {
+    return INCOME_STREAM_DEFINITIONS;
+  }
+
+  return rows.map(parseIncomeTypeRow);
+}
+
+export function createIncomeType(data: {
+  user_id?: number;
+  type: string;
+  label: string;
+  shortLabel: string;
+  icon: string;
+  color: string;
+  description?: string;
+  payerLabel?: string;
+  payerPlaceholder?: string;
+  descriptionPlaceholder?: string;
+  defaultCategories: string[];
+  sort_order?: number;
+  is_active?: number;
+}): IncomeStreamDefinition {
+  const db = getDb();
+  const typeKey = data.type.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
+  const sortOrder = data.sort_order ?? 99;
+
+  const res = db.prepare(`
+    INSERT INTO income_types (
+      user_id, type_key, label, short_label, icon, color, description,
+      payer_label, payer_placeholder, description_placeholder,
+      subcategories, sort_order, is_active
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    data.user_id || null,
+    typeKey,
+    data.label.trim(),
+    data.shortLabel.trim(),
+    data.icon || '💰',
+    data.color || '#10b981',
+    data.description || null,
+    data.payerLabel || 'Payer / Source',
+    data.payerPlaceholder || 'e.g. Source name',
+    data.descriptionPlaceholder || 'e.g. Income details',
+    JSON.stringify(data.defaultCategories || []),
+    sortOrder,
+    data.is_active !== undefined ? data.is_active : 1
+  );
+
+  const row = db.prepare('SELECT * FROM income_types WHERE id = ?').get(res.lastInsertRowid) as unknown as RawIncomeTypeRow;
+  return parseIncomeTypeRow(row);
+}
+
+export function updateIncomeType(
+  id: number,
+  data: Partial<IncomeStreamDefinition>,
+  userId?: number
+): IncomeStreamDefinition | null {
+  const db = getDb();
+  let query = 'SELECT * FROM income_types WHERE id = ?';
+  const params: (string | number)[] = [id];
+  if (userId) {
+    query += ' AND (user_id = ? OR user_id IS NULL)';
+    params.push(userId);
+  }
+  const existing = db.prepare(query).get(...params) as unknown as RawIncomeTypeRow | undefined;
+  if (!existing) return null;
+
+  const anyData = data as Record<string, unknown>;
+  const rawSubcats = data.defaultCategories !== undefined ? data.defaultCategories : anyData.subcategories;
+  const subcats = rawSubcats !== undefined ? JSON.stringify(rawSubcats) : existing.subcategories;
+  const label = (data.label || anyData.label) as string | undefined;
+  const shortLabel = (data.shortLabel || anyData.short_label) as string | undefined;
+  const icon = (data.icon || anyData.icon) as string | undefined;
+  const color = (data.color || anyData.color) as string | undefined;
+  const payerLabel = (data.payerLabel || anyData.payer_label) as string | undefined;
+  const payerPlaceholder = (data.payerPlaceholder || anyData.payer_placeholder) as string | undefined;
+  const descriptionPlaceholder = (data.descriptionPlaceholder || anyData.description_placeholder) as string | undefined;
+
+  db.prepare(`
+    UPDATE income_types
+    SET label = COALESCE(?, label),
+        short_label = COALESCE(?, short_label),
+        icon = COALESCE(?, icon),
+        color = COALESCE(?, color),
+        description = ?,
+        payer_label = COALESCE(?, payer_label),
+        payer_placeholder = COALESCE(?, payer_placeholder),
+        description_placeholder = COALESCE(?, description_placeholder),
+        subcategories = ?,
+        sort_order = COALESCE(?, sort_order),
+        is_active = COALESCE(?, is_active)
+    WHERE id = ?
+  `).run(
+    label || null,
+    shortLabel || null,
+    icon || null,
+    color || null,
+    data.description !== undefined ? data.description : existing.description,
+    payerLabel || null,
+    payerPlaceholder || null,
+    descriptionPlaceholder || null,
+    subcats,
+    data.sort_order !== undefined ? data.sort_order : null,
+    data.is_active !== undefined ? data.is_active : null,
+    id
+  );
+
+  const updated = db.prepare('SELECT * FROM income_types WHERE id = ?').get(id) as unknown as RawIncomeTypeRow;
+  return parseIncomeTypeRow(updated);
+}
+
+export function deleteIncomeType(id: number, userId?: number): boolean {
+  const db = getDb();
+  let query = 'DELETE FROM income_types WHERE id = ?';
+  const params: (string | number)[] = [id];
+  if (userId) {
+    query += ' AND user_id = ?';
+    params.push(userId);
+  }
+  const res = db.prepare(query).run(...params);
+  return res.changes > 0;
+}
+
+export function resetIncomeTypes(userId: number): IncomeStreamDefinition[] {
+  const db = getDb();
+  db.prepare('DELETE FROM income_types WHERE user_id = ?').run(userId);
+  seedDefaultIncomeTypesForUser(userId);
+  return getIncomeTypes(userId);
+}
+
+export function addIncomeSubcategory(id: number, subcategoryName: string, userId?: number): IncomeStreamDefinition | null {
+  const db = getDb();
+  let query = 'SELECT * FROM income_types WHERE id = ?';
+  const params: (string | number)[] = [id];
+  if (userId) {
+    query += ' AND (user_id = ? OR user_id IS NULL)';
+    params.push(userId);
+  }
+  const existing = db.prepare(query).get(...params) as unknown as RawIncomeTypeRow | undefined;
+  if (!existing) return null;
+
+  let currentSubcats: string[] = [];
+  if (existing.subcategories) {
+    try {
+      currentSubcats = JSON.parse(existing.subcategories);
+    } catch {
+      currentSubcats = [];
+    }
+  }
+
+  const trimmed = subcategoryName.trim();
+  if (trimmed && !currentSubcats.includes(trimmed)) {
+    currentSubcats.push(trimmed);
+    db.prepare('UPDATE income_types SET subcategories = ? WHERE id = ?').run(JSON.stringify(currentSubcats), id);
+  }
+
+  const updated = db.prepare('SELECT * FROM income_types WHERE id = ?').get(id) as unknown as RawIncomeTypeRow;
+  return parseIncomeTypeRow(updated);
+}
+
+export function removeIncomeSubcategory(id: number, subcategoryName: string, userId?: number): IncomeStreamDefinition | null {
+  const db = getDb();
+  let query = 'SELECT * FROM income_types WHERE id = ?';
+  const params: (string | number)[] = [id];
+  if (userId) {
+    query += ' AND (user_id = ? OR user_id IS NULL)';
+    params.push(userId);
+  }
+  const existing = db.prepare(query).get(...params) as unknown as RawIncomeTypeRow | undefined;
+  if (!existing) return null;
+
+  let currentSubcats: string[] = [];
+  if (existing.subcategories) {
+    try {
+      currentSubcats = JSON.parse(existing.subcategories);
+    } catch {
+      currentSubcats = [];
+    }
+  }
+
+  const filtered = currentSubcats.filter((s) => s !== subcategoryName);
+  db.prepare('UPDATE income_types SET subcategories = ? WHERE id = ?').run(JSON.stringify(filtered), id);
+
+  const updated = db.prepare('SELECT * FROM income_types WHERE id = ?').get(id) as unknown as RawIncomeTypeRow;
+  return parseIncomeTypeRow(updated);
+}
+
+

@@ -7,10 +7,12 @@ import KPISummaryCards from '@/components/KPISummaryCards';
 import WorksheetGrid from '@/components/worksheet/WorksheetGrid';
 import TransactionModal from '@/components/transactions/TransactionModal';
 import ExpensesDashboard from '@/components/dashboard/ExpensesDashboard';
+import IncomeManager from '@/components/income/IncomeManager';
+import MonthlyBudgetManager from '@/components/budget/MonthlyBudgetManager';
 import MasterBookPage from './master-book/page';
 import LedgerPage from './ledger/page';
 import SettingsPage from './settings/page';
-import { AccountBook, Account, Category, MonthlyWorksheetData } from '@/lib/types';
+import { AccountBook, Account, Category, MonthlyWorksheetData, Transaction } from '@/lib/types';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<NavTabType>('dashboard');
@@ -24,6 +26,7 @@ export default function Home() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [isTxModalOpen, setIsTxModalOpen] = useState<boolean>(false);
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
 
   // Load books, accounts, and categories
   const loadInitialData = async () => {
@@ -58,7 +61,10 @@ export default function Home() {
   // Load worksheet data
   const loadWorksheet = async () => {
     if (!activeBookId) return;
-    setLoading(true);
+    // Only show full loading fallback if worksheet data does not exist yet
+    if (!worksheetData) {
+      setLoading(true);
+    }
     try {
       const res = await fetch(`/api/worksheet?bookId=${activeBookId}&year=${year}&month=${month}`);
       const json = await res.json();
@@ -169,6 +175,7 @@ export default function Home() {
             }}
             onBookChange={(bId) => setActiveBookId(bId)}
             onOpenNewTxModal={() => setIsTxModalOpen(true)}
+            onEditTransaction={(tx) => setEditingTransaction(tx)}
           />
         )}
 
@@ -184,6 +191,7 @@ export default function Home() {
               <WorksheetGrid
                 data={worksheetData}
                 accounts={accounts.filter((a) => a.book_id === activeBookId)}
+                categories={categories}
                 onRefresh={loadWorksheet}
               />
             ) : (
@@ -192,6 +200,36 @@ export default function Home() {
               </div>
             )}
           </div>
+        )}
+
+        {activeTab === 'income' && (
+          <IncomeManager
+            books={books}
+            activeBookId={activeBookId}
+            year={year}
+            month={month}
+            accounts={accounts}
+            onBookChange={(bId) => setActiveBookId(bId)}
+            onMonthChange={(y, m) => {
+              setYear(y);
+              setMonth(m);
+            }}
+          />
+        )}
+
+        {activeTab === 'budget' && (
+          <MonthlyBudgetManager
+            books={books}
+            activeBookId={activeBookId}
+            year={year}
+            month={month}
+            onBookChange={(bId) => setActiveBookId(bId)}
+            onMonthChange={(y, m) => {
+              setYear(y);
+              setMonth(m);
+            }}
+            onOpenNewTxModal={() => setIsTxModalOpen(true)}
+          />
         )}
 
         {activeTab === 'ledger' && <LedgerPage />}
@@ -211,6 +249,22 @@ export default function Home() {
           onClose={() => setIsTxModalOpen(false)}
           onSuccess={() => {
             setIsTxModalOpen(false);
+            loadWorksheet();
+          }}
+        />
+      )}
+
+      {/* Edit Transaction Modal */}
+      {editingTransaction && (
+        <TransactionModal
+          books={books}
+          activeBookId={editingTransaction.book_id || activeBookId}
+          accounts={accounts}
+          categories={categories}
+          editTransaction={editingTransaction}
+          onClose={() => setEditingTransaction(null)}
+          onSuccess={() => {
+            setEditingTransaction(null);
             loadWorksheet();
           }}
         />

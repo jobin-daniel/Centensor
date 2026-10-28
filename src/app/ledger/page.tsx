@@ -1,14 +1,17 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Search, Download, Trash2, Filter, Receipt } from 'lucide-react';
-import { Transaction, AccountBook, Category } from '@/lib/types';
+import { Search, Download, Trash2, Filter, Receipt, Pencil } from 'lucide-react';
+import { Transaction, AccountBook, Category, Account } from '@/lib/types';
 import { formatCurrency } from '@/lib/formatters';
+import TransactionModal from '@/components/transactions/TransactionModal';
 
 export default function LedgerPage() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [books, setBooks] = useState<AccountBook[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [loading, setLoading] = useState(true);
 
   // Filters
@@ -20,21 +23,24 @@ export default function LedgerPage() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [txRes, booksRes, catRes] = await Promise.all([
+      const [txRes, booksRes, catRes, masterRes] = await Promise.all([
         fetch(`/api/transactions?limit=200${selectedBookId ? `&bookId=${selectedBookId}` : ''}${selectedCategoryId ? `&categoryId=${selectedCategoryId}` : ''}${selectedMethod ? `&paymentMethod=${selectedMethod}` : ''}`),
         fetch('/api/books'),
         fetch('/api/categories'),
+        fetch('/api/master-data'),
       ]);
 
-      const [txJson, booksJson, catJson] = await Promise.all([
+      const [txJson, booksJson, catJson, masterJson] = await Promise.all([
         txRes.json(),
         booksRes.json(),
         catRes.json(),
+        masterRes.json(),
       ]);
 
       if (txJson.success) setTransactions(txJson.transactions);
       if (booksJson.success) setBooks(booksJson.books);
       if (catJson.success) setCategories(catJson.categories);
+      if (masterJson.success && masterJson.accounts) setAccounts(masterJson.accounts);
     } catch (e) {
       console.error(e);
     } finally {
@@ -46,7 +52,7 @@ export default function LedgerPage() {
     let ignore = false;
     async function load() {
       try {
-        const [txRes, booksRes, catRes] = await Promise.all([
+        const [txRes, booksRes, catRes, masterRes] = await Promise.all([
           fetch(
             `/api/transactions?limit=200${selectedBookId ? `&bookId=${selectedBookId}` : ''}${
               selectedCategoryId ? `&categoryId=${selectedCategoryId}` : ''
@@ -54,18 +60,21 @@ export default function LedgerPage() {
           ),
           fetch('/api/books'),
           fetch('/api/categories'),
+          fetch('/api/master-data'),
         ]);
 
-        const [txJson, booksJson, catJson] = await Promise.all([
+        const [txJson, booksJson, catJson, masterJson] = await Promise.all([
           txRes.json(),
           booksRes.json(),
           catRes.json(),
+          masterRes.json(),
         ]);
 
         if (!ignore) {
           if (txJson.success) setTransactions(txJson.transactions);
           if (booksJson.success) setBooks(booksJson.books);
           if (catJson.success) setCategories(catJson.categories);
+          if (masterJson.success && masterJson.accounts) setAccounts(masterJson.accounts);
           setLoading(false);
         }
       } catch (e) {
@@ -220,17 +229,19 @@ export default function LedgerPage() {
           })}
         </select>
 
-        {/* Payment Method Filter */}
+        {/* Payment Method / Type Filter */}
         <select
           className="form-select"
-          style={{ width: '160px' }}
+          style={{ width: '170px' }}
           value={selectedMethod}
           onChange={(e) => setSelectedMethod(e.target.value)}
         >
-          <option value="">All Payment Types</option>
+          <option value="">All Types & Methods</option>
           <option value="cash">Cash in Hand</option>
           <option value="debit_card">Debit / Bank</option>
           <option value="credit_card">Credit Card</option>
+          <option value="transfer">Account Transfer</option>
+          <option value="income">Income</option>
         </select>
       </div>
 
@@ -292,55 +303,119 @@ export default function LedgerPage() {
                           <div style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: tx.category_color || 'var(--primary)' }} />
                           <span>{tx.category_name}</span>
                         </div>
+                      ) : tx.type === 'income' ? (
+                        <span style={{ color: '#10b981', fontWeight: 600 }}>💰 Income</span>
+                      ) : tx.type === 'transfer' ? (
+                        <span style={{ color: '#8b5cf6', fontWeight: 600 }}>🔄 Transfer</span>
                       ) : (
                         <span style={{ color: 'var(--text-muted)' }}>{tx.type}</span>
                       )}
                     </td>
                     <td style={{ padding: '12px 16px' }}>
-                      <span
-                        className={`badge ${
-                          tx.payment_method === 'cash'
-                            ? 'badge-cash'
+                      {tx.type === 'transfer' ? (
+                        <span
+                          className="badge"
+                          style={{
+                            background: 'rgba(139, 92, 246, 0.15)',
+                            color: '#a78bfa',
+                            border: '1px solid rgba(139, 92, 246, 0.3)',
+                          }}
+                        >
+                          Account Transfer
+                        </span>
+                      ) : tx.type === 'income' ? (
+                        <span
+                          className="badge"
+                          style={{
+                            background: 'rgba(16, 185, 129, 0.15)',
+                            color: '#34d399',
+                            border: '1px solid rgba(16, 185, 129, 0.3)',
+                          }}
+                        >
+                          Income
+                        </span>
+                      ) : (
+                        <span
+                          className={`badge ${
+                            tx.payment_method === 'cash'
+                              ? 'badge-cash'
+                              : tx.payment_method === 'credit_card'
+                              ? 'badge-credit'
+                              : 'badge-debit'
+                          }`}
+                        >
+                          {tx.type === 'bank_withdrawal'
+                            ? 'Bank Cash In'
+                            : tx.type === 'card_settlement'
+                            ? 'Card Settlement'
+                            : tx.payment_method === 'cash'
+                            ? 'Cash'
                             : tx.payment_method === 'credit_card'
-                            ? 'badge-credit'
-                            : 'badge-debit'
-                        }`}
-                      >
-                        {tx.type === 'bank_withdrawal'
-                          ? 'Bank Cash In'
-                          : tx.type === 'card_settlement'
-                          ? 'Card Settlement'
-                          : tx.payment_method === 'cash'
-                          ? 'Cash'
-                          : tx.payment_method === 'credit_card'
-                          ? 'Credit Card'
-                          : 'Debit'}
-                      </span>
+                            ? 'Credit Card'
+                            : 'Debit'}
+                        </span>
+                      )}
                     </td>
                     <td style={{ padding: '12px 16px', color: 'var(--text-secondary)' }}>
-                      {tx.account_name || 'Account'}
+                      {tx.type === 'transfer' ? (
+                        <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+                          {tx.account_name} <span style={{ color: '#8b5cf6' }}>➔</span> {tx.to_account_name || 'Dest'}
+                        </span>
+                      ) : tx.type === 'bank_withdrawal' || tx.type === 'card_settlement' ? (
+                        <span>
+                          {tx.account_name} ➔ {tx.to_account_name || 'Target'}
+                        </span>
+                      ) : (
+                        tx.account_name || 'Account'
+                      )}
                     </td>
                     <td style={{ padding: '12px 16px' }}>
                       <div>{tx.description || '-'}</div>
                       {tx.merchant && <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{tx.merchant}</div>}
                     </td>
-                    <td style={{ padding: '12px 16px', textAlign: 'right', fontWeight: 700 }} className="tabular-nums">
+                    <td
+                      style={{
+                        padding: '12px 16px',
+                        textAlign: 'right',
+                        fontWeight: 700,
+                        color: tx.type === 'income' ? '#34d399' : tx.type === 'transfer' ? '#a78bfa' : 'var(--text-primary)',
+                      }}
+                      className="tabular-nums"
+                    >
+                      {tx.type === 'income' ? '+ ' : ''}
                       {formatCurrency(tx.amount, tx.currency_code, tx.currency_symbol)}
                     </td>
                     <td style={{ padding: '12px 16px', textAlign: 'center' }}>
-                      <button
-                        onClick={() => handleDelete(tx.id)}
-                        style={{
-                          background: 'transparent',
-                          border: 'none',
-                          color: 'var(--text-muted)',
-                          cursor: 'pointer',
-                          padding: '4px',
-                        }}
-                        title="Delete"
-                      >
-                        <Trash2 size={16} />
-                      </button>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                        <button
+                          onClick={() => setEditingTransaction(tx)}
+                          style={{
+                            background: 'transparent',
+                            border: 'none',
+                            color: 'var(--text-muted)',
+                            cursor: 'pointer',
+                            padding: '4px',
+                            borderRadius: 'var(--radius-sm)',
+                          }}
+                          title="Edit transaction"
+                        >
+                          <Pencil size={15} />
+                        </button>
+                        <button
+                          onClick={() => handleDelete(tx.id)}
+                          style={{
+                            background: 'transparent',
+                            border: 'none',
+                            color: 'var(--text-muted)',
+                            cursor: 'pointer',
+                            padding: '4px',
+                            borderRadius: 'var(--radius-sm)',
+                          }}
+                          title="Delete"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -349,6 +424,21 @@ export default function LedgerPage() {
           </table>
         </div>
       </div>
+
+      {editingTransaction && (
+        <TransactionModal
+          books={books}
+          activeBookId={editingTransaction.book_id || (books[0]?.id || 1)}
+          accounts={accounts}
+          categories={categories}
+          editTransaction={editingTransaction}
+          onClose={() => setEditingTransaction(null)}
+          onSuccess={() => {
+            setEditingTransaction(null);
+            fetchData();
+          }}
+        />
+      )}
     </div>
   );
 }

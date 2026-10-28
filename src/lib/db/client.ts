@@ -124,6 +124,73 @@ function runTenantMigrations(db: DatabaseSync) {
 
       CREATE INDEX IF NOT EXISTS idx_monthly_ws_heads ON monthly_worksheet_heads(user_id, book_id, month);
       CREATE INDEX IF NOT EXISTS idx_monthly_ws_cats ON monthly_worksheet_categories(user_id, book_id, month);
+
+      CREATE TABLE IF NOT EXISTS recurring_transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        book_id INTEGER NOT NULL REFERENCES account_books(id) ON DELETE CASCADE,
+        account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+        type TEXT NOT NULL DEFAULT 'income',
+        to_account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+        name TEXT NOT NULL,
+        amount REAL NOT NULL,
+        currency_code TEXT NOT NULL,
+        frequency TEXT NOT NULL DEFAULT 'monthly',
+        day_of_month INTEGER DEFAULT 1,
+        day_of_week INTEGER DEFAULT 1,
+        start_date TEXT NOT NULL,
+        end_date TEXT,
+        last_processed_date TEXT,
+        next_due_date TEXT,
+        payer_merchant TEXT,
+        description TEXT,
+        auto_post INTEGER DEFAULT 0,
+        is_active INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_recurring_user ON recurring_transactions(user_id);
+      CREATE INDEX IF NOT EXISTS idx_recurring_book ON recurring_transactions(book_id);
+    `);
+
+    // 7. Ensure transactions table has income_type, income_category, repayment_due_date, repayment_status
+    const txCols = db.prepare("PRAGMA table_info(transactions)").all() as { name: string }[];
+    if (!txCols.some((c) => c.name === 'income_type')) {
+      db.exec("ALTER TABLE transactions ADD COLUMN income_type TEXT;");
+    }
+    if (!txCols.some((c) => c.name === 'income_category')) {
+      db.exec("ALTER TABLE transactions ADD COLUMN income_category TEXT;");
+    }
+    if (!txCols.some((c) => c.name === 'repayment_due_date')) {
+      db.exec("ALTER TABLE transactions ADD COLUMN repayment_due_date TEXT;");
+    }
+    if (!txCols.some((c) => c.name === 'repayment_status')) {
+      db.exec("ALTER TABLE transactions ADD COLUMN repayment_status TEXT DEFAULT 'pending';");
+    }
+    db.exec("CREATE INDEX IF NOT EXISTS idx_tx_income ON transactions(type, income_type);");
+
+    // 8. Ensure income_types table exists for user-configurable income streams
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS income_types (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        type_key TEXT NOT NULL,
+        label TEXT NOT NULL,
+        short_label TEXT NOT NULL,
+        icon TEXT NOT NULL,
+        color TEXT NOT NULL,
+        description TEXT,
+        payer_label TEXT DEFAULT 'Payer / Source',
+        payer_placeholder TEXT DEFAULT 'e.g. Source name',
+        description_placeholder TEXT DEFAULT 'e.g. Income details',
+        subcategories TEXT,
+        sort_order INTEGER DEFAULT 0,
+        is_active INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, type_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_income_types_user ON income_types(user_id, sort_order);
     `);
   } catch (e) {
     console.error('Tenant migration error:', e);

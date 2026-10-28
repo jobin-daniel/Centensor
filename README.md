@@ -33,7 +33,7 @@ cp .env.example .env.local
 npm run dev
 ```
 
-4. Open [http://localhost:3000](http://localhost:3000) in your browser.
+4. Open [http://localhost:18667](http://localhost:18667) in your browser.
 
 ### Default Demo Credentials
 

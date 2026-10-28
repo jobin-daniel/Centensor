@@ -5,7 +5,7 @@ import Header from '@/components/Header';
 import Navigation from '@/components/Navigation';
 import ExpensesDashboard from '@/components/dashboard/ExpensesDashboard';
 import TransactionModal from '@/components/transactions/TransactionModal';
-import { AccountBook, Account, Category } from '@/lib/types';
+import { AccountBook, Account, Category, Transaction } from '@/lib/types';
 import { useRouter } from 'next/navigation';
 
 export default function DashboardStandalonePage() {
@@ -17,6 +17,7 @@ export default function DashboardStandalonePage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [isTxModalOpen, setIsTxModalOpen] = useState<boolean>(false);
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
 
   useEffect(() => {
     const loadInitialData = async () => {
@@ -85,6 +86,7 @@ export default function DashboardStandalonePage() {
           }}
           onBookChange={(bId) => setActiveBookId(bId)}
           onOpenNewTxModal={() => setIsTxModalOpen(true)}
+          onEditTransaction={(tx) => setEditingTransaction(tx)}
         />
       </main>
 
@@ -97,6 +99,20 @@ export default function DashboardStandalonePage() {
           onClose={() => setIsTxModalOpen(false)}
           onSuccess={() => {
             setIsTxModalOpen(false);
+          }}
+        />
+      )}
+
+      {editingTransaction && (
+        <TransactionModal
+          books={books}
+          activeBookId={editingTransaction.book_id || activeBookId}
+          accounts={accounts}
+          categories={categories}
+          editTransaction={editingTransaction}
+          onClose={() => setEditingTransaction(null)}
+          onSuccess={() => {
+            setEditingTransaction(null);
           }}
         />
       )}

@@ -1,9 +1,9 @@
 'use client';
 
 import React from 'react';
-import { PieChart, Table2, Receipt, Globe2, Sliders, Sparkles } from 'lucide-react';
+import { PieChart, Table2, TrendingUp, Target, Receipt, Globe2, Sliders } from 'lucide-react';
 
-export type NavTabType = 'dashboard' | 'worksheet' | 'ledger' | 'master_book' | 'settings';
+export type NavTabType = 'dashboard' | 'worksheet' | 'income' | 'budget' | 'ledger' | 'master_book' | 'settings';
 
 interface NavigationProps {
   activeTab: NavTabType;
@@ -42,6 +42,22 @@ export default function Navigation({ activeTab, onTabChange, currencyCode }: Nav
               {currencyCode}
             </span>
           )}
+        </button>
+
+        <button
+          className={`nav-tab ${activeTab === 'income' ? 'active' : ''}`}
+          onClick={() => onTabChange('income')}
+        >
+          <TrendingUp size={16} color={activeTab === 'income' ? '#34d399' : 'currentColor'} />
+          <span>Income</span>
+        </button>
+
+        <button
+          className={`nav-tab ${activeTab === 'budget' ? 'active' : ''}`}
+          onClick={() => onTabChange('budget')}
+        >
+          <Target size={16} color={activeTab === 'budget' ? '#10b981' : 'currentColor'} />
+          <span>Monthly Budget</span>
         </button>
 
         <button

@@ -463,8 +463,9 @@ html, body {
 }
 
 /* =========================================================
-   TATA NEU PASS / ACCOUNT BOOK LUXURY BANNER
+   CENTENSOR PRIME / ACCOUNT STATUS LUXURY BANNER
    ========================================================= */
+.centensor-status-card,
 .neu-pass-card {
   background: linear-gradient(135deg, rgba(26, 20, 56, 0.85) 0%, rgba(15, 20, 36, 0.95) 50%, rgba(35, 15, 45, 0.8) 100%);
   border: 1px solid rgba(139, 92, 246, 0.3);
@@ -479,7 +480,9 @@ html, body {
   flex-wrap: wrap;
   position: relative;
   overflow: hidden;
+  transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
 }
+.centensor-status-card::before,
 .neu-pass-card::before {
   content: '';
   position: absolute;
@@ -490,6 +493,16 @@ html, body {
   border-radius: 50%;
   background: radial-gradient(circle, rgba(236, 72, 153, 0.18) 0%, transparent 70%);
   pointer-events: none;
+}
+[data-theme='light'] .centensor-status-card,
+[data-theme='light'] .neu-pass-card {
+  background: linear-gradient(135deg, #ffffff 0%, #f5f3ff 50%, #fdf2f8 100%);
+  border: 1px solid rgba(139, 92, 246, 0.22);
+  box-shadow: 0 10px 28px -4px rgba(139, 92, 246, 0.12), 0 2px 8px -2px rgba(0, 0, 0, 0.04), inset 0 1px 1px rgba(255, 255, 255, 0.9);
+}
+[data-theme='light'] .centensor-status-card::before,
+[data-theme='light'] .neu-pass-card::before {
+  background: radial-gradient(circle, rgba(236, 72, 153, 0.1) 0%, transparent 70%);
 }
 
 /* KPI Summary Cards - Tata Neu Glassmorphic Luxury */
@@ -738,6 +751,26 @@ html, body {
 .ws-cell:hover {
   background: var(--primary-subtle);
   outline: 1px solid var(--primary);
+}
+.ws-cell.just-saved {
+  background: var(--primary-subtle) !important;
+  outline: 2px solid var(--primary) !important;
+  box-shadow: 0 0 10px var(--primary-subtle) !important;
+  animation: cellPulse 2.5s ease-out forwards;
+}
+@keyframes cellPulse {
+  0% {
+    background: var(--primary-subtle);
+    outline: 2px solid var(--primary);
+  }
+  60% {
+    background: var(--primary-subtle);
+    outline: 2px solid var(--primary);
+  }
+  100% {
+    background: transparent;
+    outline: none;
+  }
 }
 .ws-cell.has-value {
   font-weight: 700;

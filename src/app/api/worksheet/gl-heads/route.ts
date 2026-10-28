@@ -9,6 +9,7 @@ import {
   addAllGlHeadsToMonth,
   reorderMonthlyGlHeads,
   moveMonthlyGlHead,
+  getCategoryHeads,
   createCategoryHead,
   createCategory,
 } from '@/lib/db/queries';
@@ -74,9 +75,16 @@ export async function POST(request: Request) {
 
     // 3. Remove single head
     if (action === 'remove_head') {
-      const { headId } = body;
+      let { headId, headName } = body;
+      if (!headId && headName) {
+        const allHeads = getCategoryHeads(user!.id);
+        const found = allHeads.find(
+          (h) => h.name.toLowerCase() === String(headName).trim().toLowerCase()
+        );
+        if (found) headId = found.id;
+      }
       if (!headId) {
-        return NextResponse.json({ success: false, error: 'headId is required' }, { status: 400 });
+        return NextResponse.json({ success: false, error: 'headId or headName is required' }, { status: 400 });
       }
       const preferences = removeGlHeadFromMonth(bId, monthStr, user!.id, Number(headId));
       return NextResponse.json({ success: true, preferences });

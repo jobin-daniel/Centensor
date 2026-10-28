@@ -107,6 +107,10 @@ CREATE TABLE IF NOT EXISTS transactions (
     description TEXT,
     merchant TEXT,
     notes TEXT,
+    income_type TEXT, -- 'petty_hand_loan', 'farm', 'interest', 'investment', 'stock_capital', 'salary', 'rental', etc.
+    income_category TEXT,
+    repayment_due_date TEXT,
+    repayment_status TEXT DEFAULT 'pending',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -143,6 +147,52 @@ CREATE TABLE IF NOT EXISTS monthly_worksheet_categories (
     UNIQUE(user_id, book_id, month, category_id)
 );
 
+-- 10. Recurring Transactions (Income, Expenses, Transfers)
+CREATE TABLE IF NOT EXISTS recurring_transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    book_id INTEGER NOT NULL REFERENCES account_books(id) ON DELETE CASCADE,
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+    type TEXT NOT NULL DEFAULT 'income', -- 'income', 'expense', 'transfer'
+    to_account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+    name TEXT NOT NULL,
+    amount REAL NOT NULL,
+    currency_code TEXT NOT NULL,
+    frequency TEXT NOT NULL DEFAULT 'monthly', -- 'daily', 'weekly', 'biweekly', 'monthly', 'quarterly', 'yearly'
+    day_of_month INTEGER DEFAULT 1,
+    day_of_week INTEGER DEFAULT 1,
+    start_date TEXT NOT NULL, -- 'YYYY-MM-DD'
+    end_date TEXT, -- 'YYYY-MM-DD'
+    last_processed_date TEXT, -- 'YYYY-MM-DD'
+    next_due_date TEXT, -- 'YYYY-MM-DD'
+    payer_merchant TEXT,
+    description TEXT,
+    auto_post INTEGER DEFAULT 0,
+    is_active INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 11. Configurable Income Types & Streams
+CREATE TABLE IF NOT EXISTS income_types (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    type_key TEXT NOT NULL,
+    label TEXT NOT NULL,
+    short_label TEXT NOT NULL,
+    icon TEXT NOT NULL,
+    color TEXT NOT NULL,
+    description TEXT,
+    payer_label TEXT DEFAULT 'Payer / Source',
+    payer_placeholder TEXT DEFAULT 'e.g. Source name',
+    description_placeholder TEXT DEFAULT 'e.g. Income details',
+    subcategories TEXT, -- JSON array of subcategories
+    sort_order INTEGER DEFAULT 0,
+    is_active INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, type_key)
+);
+
 -- Indices for rapid querying
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_books_user ON account_books(user_id);
@@ -151,6 +201,10 @@ CREATE INDEX IF NOT EXISTS idx_cats_user ON categories(user_id);
 CREATE INDEX IF NOT EXISTS idx_tx_book_date ON transactions(book_id, date);
 CREATE INDEX IF NOT EXISTS idx_tx_category ON transactions(category_id);
 CREATE INDEX IF NOT EXISTS idx_tx_account ON transactions(account_id);
+CREATE INDEX IF NOT EXISTS idx_tx_income ON transactions(type, income_type);
 CREATE INDEX IF NOT EXISTS idx_budgets_book_month ON budgets(book_id, month);
 CREATE INDEX IF NOT EXISTS idx_monthly_ws_heads ON monthly_worksheet_heads(user_id, book_id, month);
 CREATE INDEX IF NOT EXISTS idx_monthly_ws_cats ON monthly_worksheet_categories(user_id, book_id, month);
+CREATE INDEX IF NOT EXISTS idx_recurring_user ON recurring_transactions(user_id);
+CREATE INDEX IF NOT EXISTS idx_recurring_book ON recurring_transactions(book_id);
+CREATE INDEX IF NOT EXISTS idx_income_types_user ON income_types(user_id, sort_order);
