@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { signIn } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
@@ -12,6 +12,14 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [isLocalHost, setIsLocalHost] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const host = window.location.hostname;
+      setIsLocalHost(host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host.endsWith('.local'));
+    }
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -245,43 +253,45 @@ export default function LoginPage() {
           </button>
         </form>
 
-        {/* Demo Fast Login Helper */}
-        <div
-          style={{
-            marginTop: '24px',
-            padding: '14px',
-            borderRadius: '12px',
-            background: 'rgba(139, 92, 246, 0.08)',
-            border: '1px dashed rgba(139, 92, 246, 0.3)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <ShieldCheck size={18} color="#a78bfa" />
-            <div style={{ fontSize: '12px' }}>
-              <div style={{ fontWeight: 600, color: '#f8fafc' }}>Demo Account Ready</div>
-              <div style={{ color: 'var(--text-muted)' }}>demo@centensor.com</div>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={handleFillDemo}
+        {/* Demo Fast Login Helper (Localhost / Dev only) */}
+        {isLocalHost && (
+          <div
             style={{
-              padding: '6px 12px',
-              borderRadius: '8px',
-              background: 'rgba(139, 92, 246, 0.25)',
-              border: '1px solid rgba(139, 92, 246, 0.4)',
-              color: '#ffffff',
-              fontSize: '11px',
-              fontWeight: 700,
-              cursor: 'pointer',
+              marginTop: '24px',
+              padding: '14px',
+              borderRadius: '12px',
+              background: 'rgba(139, 92, 246, 0.08)',
+              border: '1px dashed rgba(139, 92, 246, 0.3)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
             }}
           >
-            Fill Demo
-          </button>
-        </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <ShieldCheck size={18} color="#a78bfa" />
+              <div style={{ fontSize: '12px' }}>
+                <div style={{ fontWeight: 600, color: '#f8fafc' }}>Demo Account Ready</div>
+                <div style={{ color: 'var(--text-muted)' }}>demo@centensor.com</div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={handleFillDemo}
+              style={{
+                padding: '6px 12px',
+                borderRadius: '8px',
+                background: 'rgba(139, 92, 246, 0.25)',
+                border: '1px solid rgba(139, 92, 246, 0.4)',
+                color: '#ffffff',
+                fontSize: '11px',
+                fontWeight: 700,
+                cursor: 'pointer',
+              }}
+            >
+              Fill Demo
+            </button>
+          </div>
+        )}
 
         {/* Footer Link to Register */}
         <div style={{ textAlign: 'center', marginTop: '28px', fontSize: '13px', color: 'var(--text-muted)' }}>
