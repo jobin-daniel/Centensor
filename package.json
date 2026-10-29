@@ -4,14 +4,15 @@
   "private": true,
   "scripts": {
     "dev": "PORT=3000 next dev",
-    "build": "next build",
+    "build": "if [ -z \"$OPEN_NEXT_BUILD\" ]; then OPEN_NEXT_BUILD=1 opennextjs-cloudflare build; else next build; fi",
     "start": "PORT=18667 next start",
     "lint": "eslint"
   },
   "dependencies": {
+    "@opennextjs/cloudflare": "^1.20.14",
     "bcryptjs": "^3.0.3",
     "lucide-react": "^1.49.0",
-    "next": "16.3.8",
+    "next": "^16.4.3",
     "next-auth": "^5.0.0-beta.32",
     "react": "19.2.8",
     "react-dom": "19.2.8"
@@ -22,7 +23,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.3.8",
+    "eslint-config-next": "^16.4.3",
     "typescript": "^5"
   }
 }

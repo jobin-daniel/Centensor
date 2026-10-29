@@ -40,3 +40,8 @@ data/
 *.db-shm
 d1-dump.sql
 
+# cloudflare / open-next
+.open-next/
+.wrangler/
+
+
