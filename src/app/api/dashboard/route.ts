@@ -14,7 +14,7 @@ export async function GET(request: Request) {
     const month = searchParams.get('month') ? parseInt(searchParams.get('month')!, 10) : undefined;
     const period = (searchParams.get('period') as 'month' | 'year' | 'all') || 'month';
 
-    const data = getExpenseDashboardData({
+    const data = await getExpenseDashboardData({
       bookId,
       year,
       month,

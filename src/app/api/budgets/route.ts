@@ -20,7 +20,7 @@ export async function GET(request: Request) {
     const year = parseInt(searchParams.get('year') || String(now.getFullYear()), 10);
     const month = parseInt(searchParams.get('month') || String(now.getMonth() + 1), 10);
 
-    const budgetData = getMonthlyBudgetData(bookId, year, month, user!.id);
+    const budgetData = await getMonthlyBudgetData(bookId, year, month, user!.id);
     return NextResponse.json({ success: true, data: budgetData });
   } catch (error) {
     console.error('Error fetching monthly budget data:', error);
@@ -45,7 +45,7 @@ export async function POST(request: Request) {
           { status: 400 }
         );
       }
-      setCategoryBudget(Number(bookId), Number(categoryId), String(month), Math.max(0, Number(amount) || 0));
+      await setCategoryBudget(Number(bookId), Number(categoryId), String(month), Math.max(0, Number(amount) || 0));
       return NextResponse.json({ success: true, message: 'Budget updated successfully' });
     }
 
@@ -58,7 +58,7 @@ export async function POST(request: Request) {
           { status: 400 }
         );
       }
-      setMultipleCategoryBudgets(Number(bookId), String(month), budgets);
+      await setMultipleCategoryBudgets(Number(bookId), String(month), budgets);
       return NextResponse.json({ success: true, count: budgets.length });
     }
 
@@ -71,7 +71,7 @@ export async function POST(request: Request) {
           { status: 400 }
         );
       }
-      const res = copyBudgetsFromMonth(Number(bookId), String(sourceMonth), String(targetMonth));
+      const res = await copyBudgetsFromMonth(Number(bookId), String(sourceMonth), String(targetMonth));
       return NextResponse.json({
         success: true,
         message: `Successfully copied ${res.copiedCount} budgets from ${sourceMonth}`,
@@ -88,7 +88,7 @@ export async function POST(request: Request) {
           { status: 400 }
         );
       }
-      const res = applySmartBudgetRule(Number(bookId), String(targetMonth), rule, user!.id);
+      const res = await applySmartBudgetRule(Number(bookId), String(targetMonth), rule, user!.id);
       return NextResponse.json({
         success: true,
         message: `Successfully applied smart budget rule "${rule}" to ${res.updatedCount} categories`,
@@ -105,7 +105,7 @@ export async function POST(request: Request) {
           { status: 400 }
         );
       }
-      clearMonthBudgets(Number(bookId), String(month));
+      await clearMonthBudgets(Number(bookId), String(month));
       return NextResponse.json({ success: true, message: `Cleared all budgets for ${month}` });
     }
 

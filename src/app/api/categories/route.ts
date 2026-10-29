@@ -22,8 +22,8 @@ export async function GET(request: Request) {
     const bookId = searchParams.get('bookId') ? parseInt(searchParams.get('bookId')!, 10) : undefined;
     const month = searchParams.get('month') || undefined;
 
-    const categories = getCategories(bookId, month, user!.id);
-    const heads = getCategoryHeads(user!.id);
+    const categories = await getCategories(bookId, month, user!.id);
+    const heads = await getCategoryHeads(user!.id);
 
     return NextResponse.json({ success: true, categories, heads });
   } catch (error) {
@@ -41,12 +41,12 @@ export async function POST(request: Request) {
 
     // Reset all heads and subheads to the recommended taxonomy for this user
     if (action === 'reset_defaults') {
-      resetCategoriesToDefault(user!.id);
+      await resetCategoriesToDefault(user!.id);
       return NextResponse.json({
         success: true,
         message: 'Successfully reset categories to recommended template',
-        heads: getCategoryHeads(user!.id),
-        categories: getCategories(undefined, undefined, user!.id),
+        heads: await getCategoryHeads(user!.id),
+        categories: await getCategories(undefined, undefined, user!.id),
       });
     }
 
@@ -59,7 +59,7 @@ export async function POST(request: Request) {
           { status: 400 }
         );
       }
-      setCategoryBudget(bookId, categoryId, month, Number(amount) || 0);
+      await setCategoryBudget(bookId, categoryId, month, Number(amount) || 0);
       return NextResponse.json({ success: true });
     }
 
@@ -69,7 +69,7 @@ export async function POST(request: Request) {
       if (!name || !name.trim()) {
         return NextResponse.json({ success: false, error: 'Main Head name is required' }, { status: 400 });
       }
-      const head = createCategoryHead({
+      const head = await createCategoryHead({
         user_id: user!.id,
         name,
         icon,
@@ -85,7 +85,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: false, error: 'Sub Head name is required' }, { status: 400 });
     }
 
-    const category = createCategory({
+    const category = await createCategory({
       user_id: user!.id,
       head_id: head_id ? Number(head_id) : null,
       name,
@@ -120,7 +120,7 @@ export async function PUT(request: Request) {
       if (!name || !name.trim()) {
         return NextResponse.json({ success: false, error: 'Main Head name is required' }, { status: 400 });
       }
-      const head = updateCategoryHead(Number(id), {
+      const head = await updateCategoryHead(Number(id), {
         name,
         icon,
         color,
@@ -131,7 +131,7 @@ export async function PUT(request: Request) {
 
     // Update Sub Head (Category)
     const { head_id, name, group_name, icon, color, sort_order } = body;
-    const category = updateCategory(Number(id), {
+    const category = await updateCategory(Number(id), {
       head_id: head_id !== undefined ? (head_id ? Number(head_id) : null) : undefined,
       name,
       group_name,
@@ -161,10 +161,10 @@ export async function DELETE(request: Request) {
     }
 
     if (type === 'head') {
-      deleteCategoryHead(parseInt(id, 10), cascade);
+      await deleteCategoryHead(parseInt(id, 10), cascade);
       return NextResponse.json({ success: true, message: 'Main Head deleted successfully' });
     } else {
-      const res = deleteCategory(parseInt(id, 10));
+      const res = await deleteCategory(parseInt(id, 10));
       return NextResponse.json({
         success: true,
         message: 'Sub Head deleted successfully',

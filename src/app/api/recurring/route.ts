@@ -19,7 +19,7 @@ export async function GET(request: Request) {
     const bookId = searchParams.get('bookId') ? parseInt(searchParams.get('bookId')!, 10) : undefined;
     const type = searchParams.get('type') || undefined;
 
-    const recurring = getRecurringTransactions(user!.id, bookId, type);
+    const recurring = await getRecurringTransactions(user!.id, bookId, type);
     return NextResponse.json({ success: true, recurring });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
@@ -39,7 +39,7 @@ export async function POST(request: Request) {
       if (!targetId) {
         return NextResponse.json({ success: false, error: 'Recurring ID is required' }, { status: 400 });
       }
-      const result = processRecurringTransaction(Number(targetId), postDate || payload?.postDate, user!.id);
+      const result = await processRecurringTransaction(Number(targetId), postDate || payload?.postDate, user!.id);
       return NextResponse.json({ ...result });
     }
 
@@ -51,12 +51,12 @@ export async function POST(request: Request) {
       );
     }
 
-    const book = getAccountBookById(Number(data.book_id), user!.id);
+    const book = await getAccountBookById(Number(data.book_id), user!.id);
     if (!book) {
       return NextResponse.json({ success: false, error: 'Account book not found' }, { status: 404 });
     }
 
-    const item = createRecurringTransaction({
+    const item = await createRecurringTransaction({
       user_id: user!.id,
       book_id: Number(data.book_id),
       account_id: Number(data.account_id),
@@ -95,7 +95,7 @@ export async function PUT(request: Request) {
       return NextResponse.json({ success: false, error: 'Recurring transaction ID is required' }, { status: 400 });
     }
 
-    const item = updateRecurringTransaction(Number(id), data, user!.id);
+    const item = await updateRecurringTransaction(Number(id), data, user!.id);
     return NextResponse.json({ success: true, recurring: item });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
@@ -113,7 +113,7 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ success: false, error: 'Recurring transaction ID is required' }, { status: 400 });
     }
 
-    deleteRecurringTransaction(parseInt(id, 10), user!.id);
+    await deleteRecurringTransaction(parseInt(id, 10), user!.id);
     return NextResponse.json({ success: true });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });

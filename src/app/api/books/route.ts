@@ -7,7 +7,7 @@ export async function GET() {
     const { user, errorResponse } = await requireAuth();
     if (errorResponse) return errorResponse;
 
-    const books = getAccountBooks(user!.id);
+    const books = await getAccountBooks(user!.id);
     return NextResponse.json({ success: true, books });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
@@ -27,7 +27,7 @@ export async function POST(request: Request) {
       if (!id) {
         return NextResponse.json({ success: false, error: 'Account Book ID is required' }, { status: 400 });
       }
-      const updated = updateAccountBook(Number(id), data, user!.id);
+      const updated = await updateAccountBook(Number(id), data, user!.id);
       return NextResponse.json({ success: true, book: updated });
     }
 
@@ -36,7 +36,7 @@ export async function POST(request: Request) {
       if (!id) {
         return NextResponse.json({ success: false, error: 'Account Book ID is required' }, { status: 400 });
       }
-      const res = deleteAccountBook(Number(id), user!.id);
+      const res = await deleteAccountBook(Number(id), user!.id);
       return NextResponse.json(res);
     }
 
@@ -44,7 +44,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: false, error: 'Name and currency code are required' }, { status: 400 });
     }
 
-    const newBook = createAccountBook({
+    const newBook = await createAccountBook({
       user_id: user!.id,
       name: body.name,
       currency_code: body.currency_code,
@@ -71,7 +71,7 @@ export async function PUT(request: Request) {
       return NextResponse.json({ success: false, error: 'Account Book ID is required' }, { status: 400 });
     }
 
-    const updated = updateAccountBook(Number(id), data, user!.id);
+    const updated = await updateAccountBook(Number(id), data, user!.id);
     return NextResponse.json({ success: true, book: updated });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
@@ -99,7 +99,7 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ success: false, error: 'Account Book ID is required' }, { status: 400 });
     }
 
-    const res = deleteAccountBook(Number(id), user!.id);
+    const res = await deleteAccountBook(Number(id), user!.id);
     return NextResponse.json(res);
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });

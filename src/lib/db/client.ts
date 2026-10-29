@@ -80,6 +80,10 @@ export function getAsyncDb(): AsyncDb {
         };
       },
       async exec(sql: string): Promise<void> {
+        const clean = sql.trim().toUpperCase();
+        if (clean.startsWith('BEGIN') || clean.startsWith('COMMIT') || clean.startsWith('ROLLBACK')) {
+          return;
+        }
         await d1.exec(sql);
       },
       prepare(sql: string) {

@@ -15,7 +15,7 @@ export async function GET() {
     const { user, errorResponse } = await requireAuth();
     if (errorResponse) return errorResponse;
 
-    const incomeTypes = getIncomeTypes(user!.id);
+    const incomeTypes = await getIncomeTypes(user!.id);
     return NextResponse.json({ success: true, incomeTypes });
   } catch (error) {
     console.error('Error fetching income types:', error);
@@ -32,7 +32,7 @@ export async function POST(request: Request) {
     const { action } = body;
 
     if (action === 'reset') {
-      const resetList = resetIncomeTypes(user!.id);
+      const resetList = await resetIncomeTypes(user!.id);
       return NextResponse.json({ success: true, incomeTypes: resetList });
     }
 
@@ -41,7 +41,7 @@ export async function POST(request: Request) {
       if (!id || !subcategory) {
         return NextResponse.json({ success: false, error: 'id and subcategory are required' }, { status: 400 });
       }
-      const updated = addIncomeSubcategory(Number(id), String(subcategory), user!.id);
+      const updated = await addIncomeSubcategory(Number(id), String(subcategory), user!.id);
       return NextResponse.json({ success: true, incomeType: updated });
     }
 
@@ -50,7 +50,7 @@ export async function POST(request: Request) {
       if (!id || !subcategory) {
         return NextResponse.json({ success: false, error: 'id and subcategory are required' }, { status: 400 });
       }
-      const updated = removeIncomeSubcategory(Number(id), String(subcategory), user!.id);
+      const updated = await removeIncomeSubcategory(Number(id), String(subcategory), user!.id);
       return NextResponse.json({ success: true, incomeType: updated });
     }
 
@@ -77,7 +77,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const created = createIncomeType({
+    const created = await createIncomeType({
       user_id: user!.id,
       type,
       label,
@@ -112,7 +112,7 @@ export async function PUT(request: Request) {
       return NextResponse.json({ success: false, error: 'Income type ID is required' }, { status: 400 });
     }
 
-    const updated = updateIncomeType(Number(id), updateFields, user!.id);
+    const updated = await updateIncomeType(Number(id), updateFields, user!.id);
     if (!updated) {
       return NextResponse.json({ success: false, error: 'Income type not found' }, { status: 404 });
     }
@@ -136,7 +136,7 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ success: false, error: 'Income type ID is required' }, { status: 400 });
     }
 
-    const deleted = deleteIncomeType(parseInt(id, 10), user!.id);
+    const deleted = await deleteIncomeType(parseInt(id, 10), user!.id);
     if (!deleted) {
       return NextResponse.json({ success: false, error: 'Income type not found or failed to delete' }, { status: 404 });
     }

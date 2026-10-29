@@ -26,7 +26,7 @@ export async function GET(request: Request) {
     const month = searchParams.get('month') ? parseInt(searchParams.get('month')!, 10) : now.getMonth() + 1;
     const monthStr = searchParams.get('monthStr') || `${year}-${String(month).padStart(2, '0')}`;
 
-    const preferences = getMonthlyWorksheetGlPreferences(bookId, monthStr, user!.id);
+    const preferences = await getMonthlyWorksheetGlPreferences(bookId, monthStr, user!.id);
     return NextResponse.json({ success: true, preferences });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
@@ -53,7 +53,7 @@ export async function POST(request: Request) {
       if (!Array.isArray(headIds)) {
         return NextResponse.json({ success: false, error: 'headIds array is required' }, { status: 400 });
       }
-      const preferences = saveMonthlyWorksheetGlPreferences({
+      const preferences = await saveMonthlyWorksheetGlPreferences({
         bookId: bId,
         monthStr,
         userId: user!.id,
@@ -69,7 +69,7 @@ export async function POST(request: Request) {
       if (!headId) {
         return NextResponse.json({ success: false, error: 'headId is required' }, { status: 400 });
       }
-      const preferences = addGlHeadToMonth(bId, monthStr, user!.id, Number(headId));
+      const preferences = await addGlHeadToMonth(bId, monthStr, user!.id, Number(headId));
       return NextResponse.json({ success: true, preferences });
     }
 
@@ -77,7 +77,7 @@ export async function POST(request: Request) {
     if (action === 'remove_head') {
       let { headId, headName } = body;
       if (!headId && headName) {
-        const allHeads = getCategoryHeads(user!.id);
+        const allHeads = await getCategoryHeads(user!.id);
         const found = allHeads.find(
           (h) => h.name.toLowerCase() === String(headName).trim().toLowerCase()
         );
@@ -86,20 +86,20 @@ export async function POST(request: Request) {
       if (!headId) {
         return NextResponse.json({ success: false, error: 'headId or headName is required' }, { status: 400 });
       }
-      const preferences = removeGlHeadFromMonth(bId, monthStr, user!.id, Number(headId));
+      const preferences = await removeGlHeadFromMonth(bId, monthStr, user!.id, Number(headId));
       return NextResponse.json({ success: true, preferences });
     }
 
     // 4. Copy from previous month
     if (action === 'copy_previous') {
       const { sourceMonth } = body;
-      const preferences = copyPreviousMonthGlPreferences(bId, monthStr, user!.id, sourceMonth);
+      const preferences = await copyPreviousMonthGlPreferences(bId, monthStr, user!.id, sourceMonth);
       return NextResponse.json({ success: true, preferences });
     }
 
     // 5. Add all heads
     if (action === 'add_all') {
-      const preferences = addAllGlHeadsToMonth(bId, monthStr, user!.id);
+      const preferences = await addAllGlHeadsToMonth(bId, monthStr, user!.id);
       return NextResponse.json({ success: true, preferences });
     }
 
@@ -109,7 +109,7 @@ export async function POST(request: Request) {
       if (!Array.isArray(headIds)) {
         return NextResponse.json({ success: false, error: 'headIds array is required' }, { status: 400 });
       }
-      const preferences = reorderMonthlyGlHeads(bId, monthStr, user!.id, headIds.map(Number));
+      const preferences = await reorderMonthlyGlHeads(bId, monthStr, user!.id, headIds.map(Number));
       return NextResponse.json({ success: true, preferences });
     }
 
@@ -119,7 +119,7 @@ export async function POST(request: Request) {
       if (!headId || !direction || (direction !== 'up' && direction !== 'down')) {
         return NextResponse.json({ success: false, error: 'headId and direction (up/down) are required' }, { status: 400 });
       }
-      const preferences = moveMonthlyGlHead(bId, monthStr, user!.id, Number(headId), direction);
+      const preferences = await moveMonthlyGlHead(bId, monthStr, user!.id, Number(headId), direction);
       return NextResponse.json({ success: true, preferences });
     }
 
@@ -130,7 +130,7 @@ export async function POST(request: Request) {
         return NextResponse.json({ success: false, error: 'GL Head name is required' }, { status: 400 });
       }
 
-      const newHead = createCategoryHead({
+      const newHead = await createCategoryHead({
         user_id: user!.id,
         name: name.trim(),
         icon: icon || '📁',
@@ -151,7 +151,7 @@ export async function POST(request: Request) {
       }
 
       for (const subName of namesToCreate) {
-        createCategory({
+        await createCategory({
           user_id: user!.id,
           head_id: newHead.id,
           name: subName,
@@ -162,7 +162,7 @@ export async function POST(request: Request) {
       }
 
       // Add to this month
-      const preferences = addGlHeadToMonth(bId, monthStr, user!.id, newHead.id);
+      const preferences = await addGlHeadToMonth(bId, monthStr, user!.id, newHead.id);
       return NextResponse.json({ success: true, preferences, head: newHead });
     }
 

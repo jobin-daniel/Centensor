@@ -26,14 +26,14 @@ export async function GET(request: Request) {
     const accountId = searchParams.get('accountId') ? parseInt(searchParams.get('accountId')!, 10) : undefined;
 
     if (accountId) {
-      const account = getAccountById(accountId, user!.id);
+      const account = await getAccountById(accountId, user!.id);
       return NextResponse.json({ success: true, account });
     }
 
-    const institutions = getInstitutions();
-    const accounts = getAccounts(bookId, user!.id);
-    const currencies = getCurrencies();
-    const masterCurrency = getMasterCurrency();
+    const institutions = await getInstitutions();
+    const accounts = await getAccounts(bookId, user!.id);
+    const currencies = await getCurrencies();
+    const masterCurrency = await getMasterCurrency();
 
     return NextResponse.json({
       success: true,
@@ -58,28 +58,28 @@ export async function POST(request: Request) {
     const { action, payload } = body;
 
     if (action === 'create_institution') {
-      const inst = createInstitution(payload);
+      const inst = await createInstitution(payload);
       return NextResponse.json({ success: true, data: inst });
     } else if (action === 'create_account') {
-      const acc = createAccount(payload);
+      const acc = await createAccount(payload);
       return NextResponse.json({ success: true, data: acc });
     } else if (action === 'update_account') {
-      const acc = updateAccount(payload.id, payload, user!.id);
+      const acc = await updateAccount(payload.id, payload, user!.id);
       return NextResponse.json({ success: true, data: acc });
     } else if (action === 'delete_account') {
-      const res = deleteAccount(payload.id, user!.id);
+      const res = await deleteAccount(payload.id, user!.id);
       return NextResponse.json({ success: true, data: res });
     } else if (action === 'update_currency_rate') {
-      updateCurrencyRate(payload.code, payload.rate);
+      await updateCurrencyRate(payload.code, payload.rate);
       return NextResponse.json({ success: true });
     } else if (action === 'set_master_currency') {
-      setMasterCurrency(payload.code);
+      await setMasterCurrency(payload.code);
       return NextResponse.json({ success: true });
     } else if (action === 'update_account_book') {
-      const book = updateAccountBook(payload.id, payload, user!.id);
+      const book = await updateAccountBook(payload.id, payload, user!.id);
       return NextResponse.json({ success: true, data: book });
     } else if (action === 'delete_account_book') {
-      const res = deleteAccountBook(payload.id, user!.id);
+      const res = await deleteAccountBook(payload.id, user!.id);
       return NextResponse.json({ success: true, data: res });
     }
 
@@ -101,7 +101,7 @@ export async function PUT(request: Request) {
       return NextResponse.json({ success: false, error: 'Account ID is required' }, { status: 400 });
     }
 
-    const acc = updateAccount(Number(id), data, user!.id);
+    const acc = await updateAccount(Number(id), data, user!.id);
     return NextResponse.json({ success: true, data: acc });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
@@ -119,7 +119,7 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ success: false, error: 'Account ID is required' }, { status: 400 });
     }
 
-    const res = deleteAccount(parseInt(id, 10), user!.id);
+    const res = await deleteAccount(parseInt(id, 10), user!.id);
     return NextResponse.json({ success: true, data: res });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });

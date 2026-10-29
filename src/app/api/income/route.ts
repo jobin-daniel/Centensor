@@ -26,7 +26,7 @@ export async function GET(request: Request) {
     const repaymentStatus = searchParams.get('repaymentStatus') || undefined;
     const search = searchParams.get('search') || undefined;
 
-    const data = getIncomeDashboardData({
+    const data = await getIncomeDashboardData({
       bookId,
       year,
       month,
@@ -74,7 +74,7 @@ export async function POST(request: Request) {
     }
 
     // Verify book belongs to this user
-    const book = getAccountBookById(Number(book_id), user!.id);
+    const book = await getAccountBookById(Number(book_id), user!.id);
     if (!book) {
       return NextResponse.json({ success: false, error: 'Account book not found' }, { status: 404 });
     }
@@ -82,14 +82,14 @@ export async function POST(request: Request) {
     // Determine payment method from account if not provided
     let pm: PaymentMethod = payment_method || 'debit_card';
     if (!payment_method) {
-      const userAccounts = getAccounts(Number(book_id), user!.id);
+      const userAccounts = await getAccounts(Number(book_id), user!.id);
       const acc = userAccounts.find((a) => a.id === Number(account_id));
       if (acc?.type === 'cash') pm = 'cash';
       else if (acc?.type === 'credit_card') pm = 'credit_card';
       else pm = 'debit_card';
     }
 
-    const tx = createTransaction({
+    const tx = await createTransaction({
       book_id: Number(book_id),
       date,
       amount: parseFloat(amount),
@@ -108,7 +108,7 @@ export async function POST(request: Request) {
     // Schedule recurring transaction if requested
     if (is_recurring) {
       try {
-        createRecurringTransaction({
+        await createRecurringTransaction({
           user_id: user!.id,
           book_id: Number(book_id),
           account_id: Number(account_id),
@@ -148,7 +148,7 @@ export async function PATCH(request: Request) {
     }
 
     if (action === 'toggle_repayment') {
-      const updated = toggleHandLoanRepayment(
+      const updated = await toggleHandLoanRepayment(
         Number(id),
         status === 'repaid' ? 'repaid' : 'pending',
         user!.id
@@ -160,7 +160,7 @@ export async function PATCH(request: Request) {
     }
 
     // General update
-    const updated = updateTransaction(Number(id), updateFields, user!.id);
+    const updated = await updateTransaction(Number(id), updateFields, user!.id);
     if (!updated) {
       return NextResponse.json({ success: false, error: 'Transaction not found' }, { status: 404 });
     }
@@ -183,7 +183,7 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ success: false, error: 'Transaction ID is required' }, { status: 400 });
     }
 
-    deleteTransaction(parseInt(id, 10), user!.id);
+    await deleteTransaction(parseInt(id, 10), user!.id);
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Error deleting income transaction:', error);

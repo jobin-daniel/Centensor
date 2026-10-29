@@ -1,4 +1,4 @@
-import { getDb } from './client';
+import { getAsyncDb } from './client';
 import { SEED_CATEGORY_HEADS } from './seeds';
 import {
   AccountBook,
@@ -46,39 +46,39 @@ import { INCOME_STREAM_DEFINITIONS, getIncomeStreamDef } from '../income-taxonom
 import { getDaysInMonth, getMonthName, isWeekend, isCurrentDay, formatDateISO, getDayOfWeekAbbr } from '../formatters';
 
 // --- Master Currencies ---
-export function getCurrencies(): Currency[] {
-  const db = getDb();
-  return db.prepare('SELECT * FROM currencies ORDER BY is_master_base DESC, code ASC').all() as unknown as Currency[];
+export async function getCurrencies(): Promise<Currency[]> {
+  const db = getAsyncDb();
+  return await db.prepare('SELECT * FROM currencies ORDER BY is_master_base DESC, code ASC').all() as unknown as Currency[];
 }
 
-export function getMasterCurrency(): Currency {
-  const db = getDb();
-  const row = db.prepare('SELECT * FROM currencies WHERE is_master_base = 1').get() as unknown as Currency;
+export async function getMasterCurrency(): Promise<Currency> {
+  const db = getAsyncDb();
+  const row = await db.prepare('SELECT * FROM currencies WHERE is_master_base = 1').get() as unknown as Currency;
   if (row) return row;
   return { code: 'INR', symbol: '₹', name: 'Indian Rupee', exchange_rate_to_master: 1.0, decimal_digits: 2, is_master_base: 1 };
 }
 
-export function updateCurrencyRate(code: string, rate: number): void {
-  const db = getDb();
-  db.prepare('UPDATE currencies SET exchange_rate_to_master = ? WHERE code = ?').run(rate, code);
+export async function updateCurrencyRate(code: string, rate: number): Promise<void> {
+  const db = getAsyncDb();
+  await db.prepare('UPDATE currencies SET exchange_rate_to_master = ? WHERE code = ?').run(rate, code);
 }
 
-export function setMasterCurrency(code: string): void {
-  const db = getDb();
-  db.exec('BEGIN TRANSACTION;');
+export async function setMasterCurrency(code: string): Promise<void> {
+  const db = getAsyncDb();
+  await db.exec('BEGIN TRANSACTION;');
   try {
-    db.prepare('UPDATE currencies SET is_master_base = 0').run();
-    db.prepare('UPDATE currencies SET is_master_base = 1, exchange_rate_to_master = 1.0 WHERE code = ?').run(code);
-    db.exec('COMMIT;');
+    await db.prepare('UPDATE currencies SET is_master_base = 0').run();
+    await db.prepare('UPDATE currencies SET is_master_base = 1, exchange_rate_to_master = 1.0 WHERE code = ?').run(code);
+    await db.exec('COMMIT;');
   } catch (e) {
-    db.exec('ROLLBACK;');
+    await db.exec('ROLLBACK;');
     throw e;
   }
 }
 
 // --- Account Books ---
-export function getAccountBooks(userId?: number): AccountBook[] {
-  const db = getDb();
+export async function getAccountBooks(userId?: number): Promise<AccountBook[]> {
+  const db = getAsyncDb();
   let query = `
     SELECT b.*, c.symbol as currency_symbol,
       (SELECT COUNT(*) FROM accounts a WHERE a.book_id = b.id) as accounts_count,
@@ -92,12 +92,12 @@ export function getAccountBooks(userId?: number): AccountBook[] {
     params.push(userId);
   }
   query += ` ORDER BY b.is_default DESC, b.sort_order ASC, b.name ASC`;
-  const rows = db.prepare(query).all(...params) as unknown as AccountBook[];
+  const rows = await db.prepare(query).all(...params) as unknown as AccountBook[];
   return rows;
 }
 
-export function getAccountBookById(id: number, userId?: number): AccountBook | null {
-  const db = getDb();
+export async function getAccountBookById(id: number, userId?: number): Promise<AccountBook | null> {
+  const db = getAsyncDb();
   let query = `
     SELECT b.*, c.symbol as currency_symbol,
       (SELECT COUNT(*) FROM accounts a WHERE a.book_id = b.id) as accounts_count,
@@ -111,37 +111,37 @@ export function getAccountBookById(id: number, userId?: number): AccountBook | n
     query += ` AND b.user_id = ?`;
     params.push(userId);
   }
-  const row = db.prepare(query).get(...params) as unknown as AccountBook;
+  const row = await db.prepare(query).get(...params) as unknown as AccountBook;
   return row || null;
 }
 
-export function createAccountBook(data: {
+export async function createAccountBook(data: {
   user_id?: number;
   name: string;
   currency_code: string;
   description?: string;
   is_default?: number;
   sort_order?: number;
-}): AccountBook {
-  const db = getDb();
+}): Promise<AccountBook> {
+  const db = getAsyncDb();
   const isDefault = data.is_default ? 1 : 0;
 
-  db.exec('BEGIN TRANSACTION;');
+  await db.exec('BEGIN TRANSACTION;');
   try {
-    const curr = db.prepare('SELECT code FROM currencies WHERE code = ?').get(data.currency_code);
+    const curr = await db.prepare('SELECT code FROM currencies WHERE code = ?').get(data.currency_code);
     if (!curr) {
       throw new Error(`Currency '${data.currency_code}' is not supported. Please configure this currency first.`);
     }
 
     if (isDefault === 1) {
       if (data.user_id) {
-        db.prepare('UPDATE account_books SET is_default = 0 WHERE user_id = ?').run(data.user_id);
+        await db.prepare('UPDATE account_books SET is_default = 0 WHERE user_id = ?').run(data.user_id);
       } else {
-        db.prepare('UPDATE account_books SET is_default = 0 WHERE user_id IS NULL').run();
+        await db.prepare('UPDATE account_books SET is_default = 0 WHERE user_id IS NULL').run();
       }
     }
 
-    const res = db.prepare(`
+    const res = await db.prepare(`
       INSERT INTO account_books (user_id, name, currency_code, description, is_default, sort_order)
       VALUES (?, ?, ?, ?, ?, COALESCE(?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM account_books WHERE (? IS NULL OR user_id = ?))))
     `).run(
@@ -157,7 +157,7 @@ export function createAccountBook(data: {
     
     const newId = Number(res.lastInsertRowid);
     // Create default cash account for this book
-    createAccount({
+    await createAccount({
       book_id: newId,
       name: `Cash in Hand (${data.currency_code})`,
       type: 'cash',
@@ -165,15 +165,15 @@ export function createAccountBook(data: {
       opening_balance: 0,
     });
 
-    db.exec('COMMIT;');
-    return getAccountBookById(newId, data.user_id)!;
+    await db.exec('COMMIT;');
+    return (await getAccountBookById(newId, data.user_id))!;
   } catch (e) {
-    db.exec('ROLLBACK;');
+    await db.exec('ROLLBACK;');
     throw e;
   }
 }
 
-export function updateAccountBook(
+export async function updateAccountBook(
   id: number,
   data: {
     name?: string;
@@ -183,15 +183,15 @@ export function updateAccountBook(
     sort_order?: number;
   },
   userId?: number
-): AccountBook {
-  const db = getDb();
-  const current = getAccountBookById(id, userId);
+): Promise<AccountBook> {
+  const db = getAsyncDb();
+  const current = await getAccountBookById(id, userId);
   if (!current) throw new Error('Account book not found');
 
-  db.exec('BEGIN TRANSACTION;');
+  await db.exec('BEGIN TRANSACTION;');
   try {
     if (data.currency_code) {
-      const curr = db.prepare('SELECT code FROM currencies WHERE code = ?').get(data.currency_code);
+      const curr = await db.prepare('SELECT code FROM currencies WHERE code = ?').get(data.currency_code);
       if (!curr) {
         throw new Error(`Currency '${data.currency_code}' is not supported. Please configure this currency first.`);
       }
@@ -202,13 +202,13 @@ export function updateAccountBook(
     if (isDefault === 1 && current.is_default !== 1) {
       // Set all other books for this user to is_default = 0
       if (userId) {
-        db.prepare('UPDATE account_books SET is_default = 0 WHERE user_id = ? AND id != ?').run(userId, id);
+        await db.prepare('UPDATE account_books SET is_default = 0 WHERE user_id = ? AND id != ?').run(userId, id);
       } else {
-        db.prepare('UPDATE account_books SET is_default = 0 WHERE (user_id IS NULL OR user_id = ?) AND id != ?').run(current.user_id || null, id);
+        await db.prepare('UPDATE account_books SET is_default = 0 WHERE (user_id IS NULL OR user_id = ?) AND id != ?').run(current.user_id || null, id);
       }
     }
 
-    db.prepare(`
+    await db.prepare(`
       UPDATE account_books
       SET name = ?,
           currency_code = ?,
@@ -225,58 +225,58 @@ export function updateAccountBook(
       id
     );
 
-    db.exec('COMMIT;');
-    return getAccountBookById(id, userId)!;
+    await db.exec('COMMIT;');
+    return (await getAccountBookById(id, userId))!;
   } catch (e) {
-    db.exec('ROLLBACK;');
+    await db.exec('ROLLBACK;');
     throw e;
   }
 }
 
-export function deleteAccountBook(
+export async function deleteAccountBook(
   id: number,
   userId?: number
-): { success: boolean; message?: string } {
-  const db = getDb();
-  const current = getAccountBookById(id, userId);
+): Promise<{ success: boolean; message?: string }> {
+  const db = getAsyncDb();
+  const current = await getAccountBookById(id, userId);
   if (!current) throw new Error('Account book not found');
 
   const countQuery = 'SELECT COUNT(*) as count FROM account_books WHERE (? IS NULL OR user_id = ?)';
-  const totalBooks = (db.prepare(countQuery).get(userId || null, userId || null) as { count: number })?.count ?? 0;
+  const totalBooks = (await db.prepare(countQuery).get(userId || null, userId || null) as { count: number })?.count ?? 0;
 
   if (totalBooks <= 1) {
     throw new Error('Cannot delete your only account book. A workspace must retain at least one active account book.');
   }
 
-  db.exec('BEGIN TRANSACTION;');
+  await db.exec('BEGIN TRANSACTION;');
   try {
     const wasDefault = current.is_default === 1;
 
     // 1. Any transfers from other books to an account in this book: set to_account_id to NULL
-    db.prepare(`
+    await db.prepare(`
       UPDATE transactions 
       SET to_account_id = NULL 
       WHERE to_account_id IN (SELECT id FROM accounts WHERE book_id = ?)
     `).run(id);
 
     // 2. Delete transactions in this book
-    db.prepare('DELETE FROM transactions WHERE book_id = ?').run(id);
+    await db.prepare('DELETE FROM transactions WHERE book_id = ?').run(id);
 
     // 3. Delete accounts in this book
-    db.prepare('DELETE FROM accounts WHERE book_id = ?').run(id);
+    await db.prepare('DELETE FROM accounts WHERE book_id = ?').run(id);
 
     // 4. Delete budgets in this book
-    db.prepare('DELETE FROM budgets WHERE book_id = ?').run(id);
+    await db.prepare('DELETE FROM budgets WHERE book_id = ?').run(id);
 
     // 5. Delete worksheet preferences / heads / categories in this book
-    db.prepare('DELETE FROM monthly_worksheet_heads WHERE book_id = ?').run(id);
-    db.prepare('DELETE FROM monthly_worksheet_categories WHERE book_id = ?').run(id);
+    await db.prepare('DELETE FROM monthly_worksheet_heads WHERE book_id = ?').run(id);
+    await db.prepare('DELETE FROM monthly_worksheet_categories WHERE book_id = ?').run(id);
 
     // 6. Delete recurring transactions in this book
-    db.prepare('DELETE FROM recurring_transactions WHERE book_id = ?').run(id);
+    await db.prepare('DELETE FROM recurring_transactions WHERE book_id = ?').run(id);
 
     // 7. Delete daily reconciliations in this book
-    db.prepare('DELETE FROM daily_reconciliations WHERE book_id = ?').run(id);
+    await db.prepare('DELETE FROM daily_reconciliations WHERE book_id = ?').run(id);
 
     // 8. Delete the account book itself
     let delQuery = 'DELETE FROM account_books WHERE id = ?';
@@ -285,7 +285,7 @@ export function deleteAccountBook(
       delQuery += ' AND user_id = ?';
       delParams.push(userId);
     }
-    db.prepare(delQuery).run(...delParams);
+    await db.prepare(delQuery).run(...delParams);
 
     // 9. If the deleted book was the default, promote another book as default
     if (wasDefault) {
@@ -299,35 +299,35 @@ export function deleteAccountBook(
           LIMIT 1
         )
       `;
-      db.prepare(promoteQuery).run(userId || null, userId || null);
+      await db.prepare(promoteQuery).run(userId || null, userId || null);
     }
 
-    db.exec('COMMIT;');
+    await db.exec('COMMIT;');
     return { success: true, message: 'Account book and associated records deleted successfully.' };
   } catch (e) {
-    db.exec('ROLLBACK;');
+    await db.exec('ROLLBACK;');
     throw e;
   }
 }
 
 // --- Institutions ---
-export function getInstitutions(): Institution[] {
-  const db = getDb();
-  return db.prepare('SELECT * FROM institutions ORDER BY country_code, name').all() as unknown as Institution[];
+export async function getInstitutions(): Promise<Institution[]> {
+  const db = getAsyncDb();
+  return await db.prepare('SELECT * FROM institutions ORDER BY country_code, name').all() as unknown as Institution[];
 }
 
-export function createInstitution(data: { name: string; country_code: string; institution_type?: string }): Institution {
-  const db = getDb();
-  const res = db.prepare(`
+export async function createInstitution(data: { name: string; country_code: string; institution_type?: string }): Promise<Institution> {
+  const db = getAsyncDb();
+  const res = await db.prepare(`
     INSERT INTO institutions (name, country_code, institution_type)
     VALUES (?, ?, ?)
   `).run(data.name, data.country_code, data.institution_type || 'bank');
-  return db.prepare('SELECT * FROM institutions WHERE id = ?').get(res.lastInsertRowid) as unknown as Institution;
+  return await db.prepare('SELECT * FROM institutions WHERE id = ?').get(res.lastInsertRowid) as unknown as Institution;
 }
 
 // --- Accounts ---
-export function getAccounts(bookId?: number, userId?: number): Account[] {
-  const db = getDb();
+export async function getAccounts(bookId?: number, userId?: number): Promise<Account[]> {
+  const db = getAsyncDb();
   let query = `
     SELECT a.*, b.name as book_name, i.name as institution_name, c.symbol as currency_symbol
     FROM accounts a
@@ -346,10 +346,10 @@ export function getAccounts(bookId?: number, userId?: number): Account[] {
     params.push(userId);
   }
   query += ' ORDER BY a.type ASC, a.name ASC';
-  return db.prepare(query).all(...params) as unknown as Account[];
+  return await db.prepare(query).all(...params) as unknown as Account[];
 }
 
-export function createAccount(data: {
+export async function createAccount(data: {
   book_id: number;
   institution_id?: number | null;
   name: string;
@@ -359,10 +359,10 @@ export function createAccount(data: {
   opening_balance?: number;
   credit_limit?: number;
   billing_cycle_day?: number | null;
-}): Account {
-  const db = getDb();
+}): Promise<Account> {
+  const db = getAsyncDb();
   const opening = data.opening_balance || 0;
-  const res = db.prepare(`
+  const res = await db.prepare(`
     INSERT INTO accounts (book_id, institution_id, name, type, currency_code, account_number_last4, opening_balance, current_balance, credit_limit, billing_cycle_day)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
@@ -378,11 +378,11 @@ export function createAccount(data: {
     data.billing_cycle_day || null
   );
 
-  return db.prepare('SELECT * FROM accounts WHERE id = ?').get(res.lastInsertRowid) as unknown as Account;
+  return await db.prepare('SELECT * FROM accounts WHERE id = ?').get(res.lastInsertRowid) as unknown as Account;
 }
 
-export function getAccountById(id: number, userId?: number): Account | null {
-  const db = getDb();
+export async function getAccountById(id: number, userId?: number): Promise<Account | null> {
+  const db = getAsyncDb();
   let query = `
     SELECT a.*, b.name as book_name, i.name as institution_name, c.symbol as currency_symbol
     FROM accounts a
@@ -396,11 +396,11 @@ export function getAccountById(id: number, userId?: number): Account | null {
     query += ' AND b.user_id = ?';
     params.push(userId);
   }
-  const row = db.prepare(query).get(...params) as unknown as Account | undefined;
+  const row = await db.prepare(query).get(...params) as unknown as Account | undefined;
   return row || null;
 }
 
-export function updateAccount(
+export async function updateAccount(
   id: number,
   data: {
     book_id?: number;
@@ -415,12 +415,12 @@ export function updateAccount(
     is_active?: number;
   },
   userId?: number
-): Account {
-  const db = getDb();
-  const current = getAccountById(id, userId);
+): Promise<Account> {
+  const db = getAsyncDb();
+  const current = await getAccountById(id, userId);
   if (!current) throw new Error('Account not found');
 
-  db.exec('BEGIN TRANSACTION;');
+  await db.exec('BEGIN TRANSACTION;');
   try {
     let newCurrentBalance = current.current_balance;
     if (data.opening_balance !== undefined && data.opening_balance !== current.opening_balance) {
@@ -428,7 +428,7 @@ export function updateAccount(
       newCurrentBalance = current.current_balance + diff;
     }
 
-    db.prepare(`
+    await db.prepare(`
       UPDATE accounts
       SET book_id = ?,
           institution_id = ?,
@@ -457,35 +457,35 @@ export function updateAccount(
       id
     );
 
-    db.exec('COMMIT;');
-    return getAccountById(id, userId)!;
+    await db.exec('COMMIT;');
+    return (await getAccountById(id, userId))!;
   } catch (e) {
-    db.exec('ROLLBACK;');
+    await db.exec('ROLLBACK;');
     throw e;
   }
 }
 
-export function deleteAccount(id: number, userId?: number): { success: boolean; transactionsCount: number } {
-  const db = getDb();
-  const current = getAccountById(id, userId);
+export async function deleteAccount(id: number, userId?: number): Promise<{ success: boolean; transactionsCount: number }> {
+  const db = getAsyncDb();
+  const current = await getAccountById(id, userId);
   if (!current) throw new Error('Account not found');
 
-  const txCount = (db.prepare('SELECT COUNT(*) as count FROM transactions WHERE account_id = ? OR to_account_id = ?').get(id, id) as { count: number })?.count ?? 0;
+  const txCount = (await db.prepare('SELECT COUNT(*) as count FROM transactions WHERE account_id = ? OR to_account_id = ?').get(id, id) as { count: number })?.count ?? 0;
 
   if (txCount > 0) {
     // Soft delete / deactivate so historical transactions and ledgers remain intact
-    db.prepare('UPDATE accounts SET is_active = 0 WHERE id = ?').run(id);
+    await db.prepare('UPDATE accounts SET is_active = 0 WHERE id = ?').run(id);
     return { success: true, transactionsCount: txCount };
   }
 
-  db.prepare('DELETE FROM accounts WHERE id = ?').run(id);
+  await db.prepare('DELETE FROM accounts WHERE id = ?').run(id);
   return { success: true, transactionsCount: 0 };
 }
 
 // --- Categories, Main Heads & Budgets ---
 
-export function getCategories(bookId?: number, monthStr?: string, userId?: number): Category[] {
-  const db = getDb();
+export async function getCategories(bookId?: number, monthStr?: string, userId?: number): Promise<Category[]> {
+  const db = getAsyncDb();
   let query = `
     SELECT 
       c.id, c.user_id, c.head_id, c.name, c.group_name, c.icon, c.color, c.sort_order,
@@ -501,12 +501,12 @@ export function getCategories(bookId?: number, monthStr?: string, userId?: numbe
     params.push(userId);
   }
   query += ` ORDER BY COALESCE(h.sort_order, 999) ASC, c.sort_order ASC, c.name ASC`;
-  const rows = db.prepare(query).all(...params) as unknown as Category[];
+  const rows = await db.prepare(query).all(...params) as unknown as Category[];
   return rows;
 }
 
-export function getCategoryHeads(userId?: number): CategoryHead[] {
-  const db = getDb();
+export async function getCategoryHeads(userId?: number): Promise<CategoryHead[]> {
+  const db = getAsyncDb();
   let query = `SELECT * FROM category_heads`;
   const params: (string | number)[] = [];
   if (userId) {
@@ -514,9 +514,9 @@ export function getCategoryHeads(userId?: number): CategoryHead[] {
     params.push(userId);
   }
   query += ` ORDER BY sort_order ASC, name ASC`;
-  const heads = db.prepare(query).all(...params) as unknown as CategoryHead[];
+  const heads = await db.prepare(query).all(...params) as unknown as CategoryHead[];
 
-  const categories = getCategories(undefined, undefined, userId);
+  const categories = await getCategories(undefined, undefined, userId);
 
   for (const h of heads) {
     h.sub_heads = categories.filter((c) => c.head_id === h.id || c.group_name === h.name);
@@ -526,43 +526,43 @@ export function getCategoryHeads(userId?: number): CategoryHead[] {
   return heads;
 }
 
-export function getCategoryHeadById(id: number, userId?: number): CategoryHead | null {
-  const db = getDb();
+export async function getCategoryHeadById(id: number, userId?: number): Promise<CategoryHead | null> {
+  const db = getAsyncDb();
   let query = 'SELECT * FROM category_heads WHERE id = ?';
   const params: (string | number)[] = [id];
   if (userId) {
     query += ' AND (user_id = ? OR user_id IS NULL)';
     params.push(userId);
   }
-  const head = db.prepare(query).get(...params) as unknown as CategoryHead | undefined;
+  const head = await db.prepare(query).get(...params) as unknown as CategoryHead | undefined;
   if (!head) return null;
-  const categories = getCategories(undefined, undefined, userId);
+  const categories = await getCategories(undefined, undefined, userId);
   head.sub_heads = categories.filter((c) => c.head_id === head.id || c.group_name === head.name);
   head.sub_categories_count = head.sub_heads.length;
   return head;
 }
 
-export function createCategoryHead(data: { user_id?: number; name: string; icon?: string; color?: string; sort_order?: number }): CategoryHead {
-  const db = getDb();
-  const nextOrderRow = db.prepare('SELECT COALESCE(MAX(sort_order), 0) + 1 as next_order FROM category_heads WHERE (? IS NULL OR user_id = ?)').get(data.user_id || null, data.user_id || null) as { next_order: number };
+export async function createCategoryHead(data: { user_id?: number; name: string; icon?: string; color?: string; sort_order?: number }): Promise<CategoryHead> {
+  const db = getAsyncDb();
+  const nextOrderRow = await db.prepare('SELECT COALESCE(MAX(sort_order), 0) + 1 as next_order FROM category_heads WHERE (? IS NULL OR user_id = ?)').get(data.user_id || null, data.user_id || null) as { next_order: number };
   const sortOrder = data.sort_order ?? nextOrderRow.next_order;
 
-  const res = db.prepare(`
+  const res = await db.prepare(`
     INSERT INTO category_heads (user_id, name, icon, color, sort_order)
     VALUES (?, ?, ?, ?, ?)
   `).run(data.user_id || null, data.name.trim(), data.icon || '📁', data.color || '#6366F1', sortOrder);
 
-  return getCategoryHeadById(Number(res.lastInsertRowid), data.user_id)!;
+  return (await getCategoryHeadById(Number(res.lastInsertRowid), data.user_id))!;
 }
 
-export function updateCategoryHead(id: number, data: { name: string; icon?: string; color?: string; sort_order?: number }): CategoryHead {
-  const db = getDb();
-  const oldHead = db.prepare('SELECT * FROM category_heads WHERE id = ?').get(id) as { name: string } | undefined;
+export async function updateCategoryHead(id: number, data: { name: string; icon?: string; color?: string; sort_order?: number }): Promise<CategoryHead> {
+  const db = getAsyncDb();
+  const oldHead = await db.prepare('SELECT * FROM category_heads WHERE id = ?').get(id) as { name: string } | undefined;
   const newName = data.name.trim();
 
-  db.exec('BEGIN TRANSACTION;');
+  await db.exec('BEGIN TRANSACTION;');
   try {
-    db.prepare(`
+    await db.prepare(`
       UPDATE category_heads 
       SET name = ?, icon = ?, color = ?, sort_order = ?
       WHERE id = ?
@@ -570,41 +570,41 @@ export function updateCategoryHead(id: number, data: { name: string; icon?: stri
 
     // Keep categories.group_name in sync
     if (oldHead && oldHead.name !== newName) {
-      db.prepare('UPDATE categories SET group_name = ? WHERE head_id = ? OR group_name = ?').run(newName, id, oldHead.name);
+      await db.prepare('UPDATE categories SET group_name = ? WHERE head_id = ? OR group_name = ?').run(newName, id, oldHead.name);
     }
 
-    db.exec('COMMIT;');
-    return getCategoryHeadById(id)!;
+    await db.exec('COMMIT;');
+    return (await getCategoryHeadById(id))!;
   } catch (e) {
-    db.exec('ROLLBACK;');
+    await db.exec('ROLLBACK;');
     throw e;
   }
 }
 
-export function deleteCategoryHead(id: number, cascade: boolean = false): void {
-  const db = getDb();
-  db.exec('BEGIN TRANSACTION;');
+export async function deleteCategoryHead(id: number, cascade: boolean = false): Promise<void> {
+  const db = getAsyncDb();
+  await db.exec('BEGIN TRANSACTION;');
   try {
     if (cascade) {
-      const subHeads = db.prepare('SELECT id FROM categories WHERE head_id = ?').all(id) as { id: number }[];
+      const subHeads = await db.prepare('SELECT id FROM categories WHERE head_id = ?').all(id) as { id: number }[];
       for (const s of subHeads) {
-        db.prepare('DELETE FROM budgets WHERE category_id = ?').run(s.id);
-        db.prepare('UPDATE transactions SET category_id = NULL WHERE category_id = ?').run(s.id);
-        db.prepare('DELETE FROM categories WHERE id = ?').run(s.id);
+        await db.prepare('DELETE FROM budgets WHERE category_id = ?').run(s.id);
+        await db.prepare('UPDATE transactions SET category_id = NULL WHERE category_id = ?').run(s.id);
+        await db.prepare('DELETE FROM categories WHERE id = ?').run(s.id);
       }
     } else {
-      db.prepare('UPDATE categories SET head_id = NULL WHERE head_id = ?').run(id);
+      await db.prepare('UPDATE categories SET head_id = NULL WHERE head_id = ?').run(id);
     }
 
-    db.prepare('DELETE FROM category_heads WHERE id = ?').run(id);
-    db.exec('COMMIT;');
+    await db.prepare('DELETE FROM category_heads WHERE id = ?').run(id);
+    await db.exec('COMMIT;');
   } catch (e) {
-    db.exec('ROLLBACK;');
+    await db.exec('ROLLBACK;');
     throw e;
   }
 }
 
-export function createCategory(data: {
+export async function createCategory(data: {
   user_id?: number;
   head_id?: number | null;
   name: string;
@@ -613,14 +613,14 @@ export function createCategory(data: {
   color?: string;
   sort_order?: number;
   monthly_budget?: number;
-}): Category {
-  const db = getDb();
+}): Promise<Category> {
+  const db = getAsyncDb();
   let groupName = data.group_name || 'Other';
   let icon = data.icon;
   let color = data.color;
 
   if (data.head_id) {
-    const head = db.prepare('SELECT name, icon, color FROM category_heads WHERE id = ?').get(data.head_id) as { name: string; icon?: string; color?: string } | undefined;
+    const head = await db.prepare('SELECT name, icon, color FROM category_heads WHERE id = ?').get(data.head_id) as { name: string; icon?: string; color?: string } | undefined;
     if (head) {
       groupName = head.name;
       if (!icon) icon = head.icon;
@@ -628,19 +628,19 @@ export function createCategory(data: {
     }
   }
 
-  const nextOrderRow = db.prepare('SELECT COALESCE(MAX(sort_order), 0) + 1 as next_order FROM categories WHERE (? IS NULL OR user_id = ?)').get(data.user_id || null, data.user_id || null) as { next_order: number };
+  const nextOrderRow = await db.prepare('SELECT COALESCE(MAX(sort_order), 0) + 1 as next_order FROM categories WHERE (? IS NULL OR user_id = ?)').get(data.user_id || null, data.user_id || null) as { next_order: number };
   const sortOrder = data.sort_order ?? nextOrderRow.next_order;
 
-  const res = db.prepare(`
+  const res = await db.prepare(`
     INSERT INTO categories (user_id, head_id, name, group_name, icon, color, sort_order)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(data.user_id || null, data.head_id || null, data.name.trim(), groupName, icon || '🏷️', color || '#6366F1', sortOrder);
 
   const newId = Number(res.lastInsertRowid);
-  return db.prepare('SELECT * FROM categories WHERE id = ?').get(newId) as unknown as Category;
+  return await db.prepare('SELECT * FROM categories WHERE id = ?').get(newId) as unknown as Category;
 }
 
-export function updateCategory(id: number, data: {
+export async function updateCategory(id: number, data: {
   head_id?: number | null;
   name?: string;
   group_name?: string;
@@ -648,22 +648,22 @@ export function updateCategory(id: number, data: {
   color?: string;
   sort_order?: number;
   monthly_budget?: number;
-}): Category {
-  const db = getDb();
-  const current = db.prepare('SELECT * FROM categories WHERE id = ?').get(id) as unknown as Category | undefined;
+}): Promise<Category> {
+  const db = getAsyncDb();
+  const current = await db.prepare('SELECT * FROM categories WHERE id = ?').get(id) as unknown as Category | undefined;
   if (!current) throw new Error('Category not found');
 
   const headId = data.head_id !== undefined ? data.head_id : current.head_id;
   let groupName = data.group_name || current.group_name;
 
   if (headId) {
-    const head = db.prepare('SELECT name, icon, color FROM category_heads WHERE id = ?').get(headId) as { name: string; icon?: string; color?: string } | undefined;
+    const head = await db.prepare('SELECT name, icon, color FROM category_heads WHERE id = ?').get(headId) as { name: string; icon?: string; color?: string } | undefined;
     if (head) {
       groupName = head.name;
     }
   }
 
-  db.prepare(`
+  await db.prepare(`
     UPDATE categories
     SET head_id = ?, name = ?, group_name = ?, icon = ?, color = ?, sort_order = ?
     WHERE id = ?
@@ -677,122 +677,122 @@ export function updateCategory(id: number, data: {
     id
   );
 
-  return db.prepare('SELECT * FROM categories WHERE id = ?').get(id) as unknown as Category;
+  return await db.prepare('SELECT * FROM categories WHERE id = ?').get(id) as unknown as Category;
 }
 
-export function deleteCategory(id: number): { success: boolean; transactionsCount: number } {
-  const db = getDb();
-  const txCount = (db.prepare('SELECT COUNT(*) as count FROM transactions WHERE category_id = ?').get(id) as { count: number })?.count ?? 0;
+export async function deleteCategory(id: number): Promise<{ success: boolean; transactionsCount: number }> {
+  const db = getAsyncDb();
+  const txCount = (await db.prepare('SELECT COUNT(*) as count FROM transactions WHERE category_id = ?').get(id) as { count: number })?.count ?? 0;
 
-  db.exec('BEGIN TRANSACTION;');
+  await db.exec('BEGIN TRANSACTION;');
   try {
     if (txCount > 0) {
-      db.prepare('UPDATE transactions SET category_id = NULL WHERE category_id = ?').run(id);
+      await db.prepare('UPDATE transactions SET category_id = NULL WHERE category_id = ?').run(id);
     }
-    db.prepare('DELETE FROM budgets WHERE category_id = ?').run(id);
-    db.prepare('DELETE FROM categories WHERE id = ?').run(id);
-    db.exec('COMMIT;');
+    await db.prepare('DELETE FROM budgets WHERE category_id = ?').run(id);
+    await db.prepare('DELETE FROM categories WHERE id = ?').run(id);
+    await db.exec('COMMIT;');
     return { success: true, transactionsCount: txCount };
   } catch (e) {
-    db.exec('ROLLBACK;');
+    await db.exec('ROLLBACK;');
     throw e;
   }
 }
 
-export function resetCategoriesToDefault(userId?: number): void {
-  const db = getDb();
-  db.exec('BEGIN TRANSACTION;');
+export async function resetCategoriesToDefault(userId?: number): Promise<void> {
+  const db = getAsyncDb();
+  await db.exec('BEGIN TRANSACTION;');
   try {
     if (userId) {
-      db.prepare(`
+      await db.prepare(`
         UPDATE transactions SET category_id = NULL 
         WHERE category_id IN (SELECT id FROM categories WHERE user_id = ?)
       `).run(userId);
-      db.prepare(`
+      await db.prepare(`
         DELETE FROM budgets 
         WHERE category_id IN (SELECT id FROM categories WHERE user_id = ?)
       `).run(userId);
-      db.prepare('DELETE FROM categories WHERE user_id = ?').run(userId);
-      db.prepare('DELETE FROM category_heads WHERE user_id = ?').run(userId);
+      await db.prepare('DELETE FROM categories WHERE user_id = ?').run(userId);
+      await db.prepare('DELETE FROM category_heads WHERE user_id = ?').run(userId);
 
-      const insertHead = db.prepare(`
+      const insertHead = await db.prepare(`
         INSERT INTO category_heads (user_id, name, icon, color, sort_order)
         VALUES (?, ?, ?, ?, ?)
       `);
-      const insertSub = db.prepare(`
+      const insertSub = await db.prepare(`
         INSERT INTO categories (user_id, head_id, name, group_name, icon, color, sort_order)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const head of SEED_CATEGORY_HEADS) {
-        const res = insertHead.run(userId, head.name, head.icon, head.color, head.sort_order);
+        const res = await insertHead.run(userId, head.name, head.icon, head.color, head.sort_order);
         const headId = Number(res.lastInsertRowid);
         for (const sub of head.sub_heads) {
-          insertSub.run(userId, headId, sub.name, head.name, sub.icon || head.icon, sub.color || head.color, sub.sort_order);
+          await insertSub.run(userId, headId, sub.name, head.name, sub.icon || head.icon, sub.color || head.color, sub.sort_order);
         }
       }
     } else {
-      db.prepare('UPDATE transactions SET category_id = NULL').run();
-      db.prepare('DELETE FROM budgets').run();
-      db.prepare('DELETE FROM categories').run();
-      db.prepare('DELETE FROM category_heads').run();
+      await db.prepare('UPDATE transactions SET category_id = NULL').run();
+      await db.prepare('DELETE FROM budgets').run();
+      await db.prepare('DELETE FROM categories').run();
+      await db.prepare('DELETE FROM category_heads').run();
 
-      const insertHead = db.prepare(`
+      const insertHead = await db.prepare(`
         INSERT INTO category_heads (name, icon, color, sort_order)
         VALUES (?, ?, ?, ?)
       `);
-      const insertSub = db.prepare(`
+      const insertSub = await db.prepare(`
         INSERT INTO categories (head_id, name, group_name, icon, color, sort_order)
         VALUES (?, ?, ?, ?, ?, ?)
       `);
 
       for (const head of SEED_CATEGORY_HEADS) {
-        const res = insertHead.run(head.name, head.icon, head.color, head.sort_order);
+        const res = await insertHead.run(head.name, head.icon, head.color, head.sort_order);
         const headId = Number(res.lastInsertRowid);
         for (const sub of head.sub_heads) {
-          insertSub.run(headId, sub.name, head.name, sub.icon || head.icon, sub.color || head.color, sub.sort_order);
+          await insertSub.run(headId, sub.name, head.name, sub.icon || head.icon, sub.color || head.color, sub.sort_order);
         }
       }
     }
 
-    db.exec('COMMIT;');
+    await db.exec('COMMIT;');
   } catch (e) {
-    db.exec('ROLLBACK;');
+    await db.exec('ROLLBACK;');
     throw e;
   }
 }
 
-export function setCategoryBudget(bookId: number, categoryId: number, month: string, amount: number): void {
-  const db = getDb();
-  db.prepare(`
+export async function setCategoryBudget(bookId: number, categoryId: number, month: string, amount: number): Promise<void> {
+  const db = getAsyncDb();
+  await db.prepare(`
     INSERT INTO budgets (book_id, month, category_id, amount)
     VALUES (?, ?, ?, ?)
     ON CONFLICT(book_id, month, category_id) DO UPDATE SET amount = excluded.amount
   `).run(bookId, month, categoryId, amount);
 }
 
-export function setMultipleCategoryBudgets(bookId: number, month: string, items: { categoryId: number; amount: number }[]): void {
-  const db = getDb();
-  db.exec('BEGIN TRANSACTION;');
+export async function setMultipleCategoryBudgets(bookId: number, month: string, items: { categoryId: number; amount: number }[]): Promise<void> {
+  const db = getAsyncDb();
+  await db.exec('BEGIN TRANSACTION;');
   try {
-    const stmt = db.prepare(`
+    const stmt = await db.prepare(`
       INSERT INTO budgets (book_id, month, category_id, amount)
       VALUES (?, ?, ?, ?)
       ON CONFLICT(book_id, month, category_id) DO UPDATE SET amount = excluded.amount
     `);
     for (const item of items) {
-      stmt.run(bookId, month, item.categoryId, Math.max(0, Number(item.amount) || 0));
+      await stmt.run(bookId, month, item.categoryId, Math.max(0, Number(item.amount) || 0));
     }
-    db.exec('COMMIT;');
+    await db.exec('COMMIT;');
   } catch (e) {
-    db.exec('ROLLBACK;');
+    await db.exec('ROLLBACK;');
     throw e;
   }
 }
 
-export function copyBudgetsFromMonth(bookId: number, sourceMonth: string, targetMonth: string): { copiedCount: number } {
-  const db = getDb();
-  const sourceBudgets = db.prepare(`
+export async function copyBudgetsFromMonth(bookId: number, sourceMonth: string, targetMonth: string): Promise<{ copiedCount: number }> {
+  const db = getAsyncDb();
+  const sourceBudgets = await db.prepare(`
     SELECT category_id, amount FROM budgets WHERE book_id = ? AND month = ?
   `).all(bookId, sourceMonth) as { category_id: number; amount: number }[];
 
@@ -800,36 +800,36 @@ export function copyBudgetsFromMonth(bookId: number, sourceMonth: string, target
     return { copiedCount: 0 };
   }
 
-  db.exec('BEGIN TRANSACTION;');
+  await db.exec('BEGIN TRANSACTION;');
   try {
-    const stmt = db.prepare(`
+    const stmt = await db.prepare(`
       INSERT INTO budgets (book_id, month, category_id, amount)
       VALUES (?, ?, ?, ?)
       ON CONFLICT(book_id, month, category_id) DO UPDATE SET amount = excluded.amount
     `);
     for (const b of sourceBudgets) {
-      stmt.run(bookId, targetMonth, b.category_id, b.amount);
+      await stmt.run(bookId, targetMonth, b.category_id, b.amount);
     }
-    db.exec('COMMIT;');
+    await db.exec('COMMIT;');
     return { copiedCount: sourceBudgets.length };
   } catch (e) {
-    db.exec('ROLLBACK;');
+    await db.exec('ROLLBACK;');
     throw e;
   }
 }
 
-export function clearMonthBudgets(bookId: number, month: string): void {
-  const db = getDb();
-  db.prepare('DELETE FROM budgets WHERE book_id = ? AND month = ?').run(bookId, month);
+export async function clearMonthBudgets(bookId: number, month: string): Promise<void> {
+  const db = getAsyncDb();
+  await db.prepare('DELETE FROM budgets WHERE book_id = ? AND month = ?').run(bookId, month);
 }
 
-export function applySmartBudgetRule(
+export async function applySmartBudgetRule(
   bookId: number,
   targetMonth: string,
   rule: SmartBudgetRule,
   userId?: number
-): { updatedCount: number } {
-  const db = getDb();
+): Promise<{ updatedCount: number }> {
+  const db = getAsyncDb();
   const [yearStr, monthNumStr] = targetMonth.split('-');
   const year = parseInt(yearStr, 10);
   const month = parseInt(monthNumStr, 10);
@@ -837,17 +837,17 @@ export function applySmartBudgetRule(
   const prevDate = new Date(year, month - 2, 1);
   const prevMonthStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
 
-  const categories = getCategories(bookId, prevMonthStr, userId);
+  const categories = await getCategories(bookId, prevMonthStr, userId);
 
   let newBudgets: { categoryId: number; amount: number }[] = [];
 
   if (rule === 'prev_month_budget') {
-    const prevBudgets = db.prepare(`
+    const prevBudgets = await db.prepare(`
       SELECT category_id, amount FROM budgets WHERE book_id = ? AND month = ?
     `).all(bookId, prevMonthStr) as { category_id: number; amount: number }[];
     newBudgets = prevBudgets.map(b => ({ categoryId: b.category_id, amount: b.amount }));
   } else if (rule === 'prev_month_actual') {
-    const prevActuals = db.prepare(`
+    const prevActuals = await db.prepare(`
       SELECT category_id, COALESCE(SUM(amount), 0) as spent
       FROM transactions
       WHERE book_id = ? AND date LIKE ? AND type = 'expense' AND category_id IS NOT NULL
@@ -859,7 +859,7 @@ export function applySmartBudgetRule(
     const startStr = `${threeMonthStartDate.getFullYear()}-${String(threeMonthStartDate.getMonth() + 1).padStart(2, '0')}-01`;
     const endStr = `${targetMonth}-01`;
 
-    const trailingActuals = db.prepare(`
+    const trailingActuals = await db.prepare(`
       SELECT category_id, COALESCE(SUM(amount), 0) as total_spent
       FROM transactions
       WHERE book_id = ? AND date >= ? AND date < ? AND type = 'expense' AND category_id IS NOT NULL
@@ -872,7 +872,7 @@ export function applySmartBudgetRule(
     }));
   } else if (rule === 'prev_budget_plus_5' || rule === 'prev_budget_plus_10' || rule === 'prev_budget_minus_5') {
     const factor = rule === 'prev_budget_plus_5' ? 1.05 : rule === 'prev_budget_plus_10' ? 1.10 : 0.95;
-    const prevBudgets = db.prepare(`
+    const prevBudgets = await db.prepare(`
       SELECT category_id, amount FROM budgets WHERE book_id = ? AND month = ?
     `).all(bookId, prevMonthStr) as { category_id: number; amount: number }[];
 
@@ -883,21 +883,21 @@ export function applySmartBudgetRule(
   }
 
   if (newBudgets.length > 0) {
-    setMultipleCategoryBudgets(bookId, targetMonth, newBudgets);
+    await setMultipleCategoryBudgets(bookId, targetMonth, newBudgets);
   }
 
   return { updatedCount: newBudgets.length };
 }
 
-export function getMonthlyBudgetData(
+export async function getMonthlyBudgetData(
   bookId: number,
   year: number,
   month: number,
   userId?: number
-): MonthlyBudgetData {
-  const db = getDb();
-  const masterCurrency = getMasterCurrency();
-  const book = getAccountBookById(bookId, userId) || getAccountBooks(userId)[0];
+): Promise<MonthlyBudgetData> {
+  const db = getAsyncDb();
+  const masterCurrency = await getMasterCurrency();
+  const book = await getAccountBookById(bookId, userId) || (await getAccountBooks(userId))[0];
   const monthStr = `${year}-${String(month).padStart(2, '0')}`;
   const monthName = getMonthName(month);
   const daysInMonth = getDaysInMonth(year, month);
@@ -912,11 +912,11 @@ export function getMonthlyBudgetData(
   const currentMonthStartStr = `${monthStr}-01`;
 
   // 1. Get Categories and Heads for user
-  const heads = getCategoryHeads(userId);
-  const categories = getCategories(book.id, monthStr, userId);
+  const heads = await getCategoryHeads(userId);
+  const categories = await getCategories(book.id, monthStr, userId);
 
   // 2. Query current month transactions grouped by category
-  const currentMonthTxs = db.prepare(`
+  const currentMonthTxs = await db.prepare(`
     SELECT category_id, COALESCE(SUM(amount), 0) as spent, COUNT(id) as count
     FROM transactions
     WHERE book_id = ? AND date LIKE ? AND type = 'expense' AND category_id IS NOT NULL
@@ -927,7 +927,7 @@ export function getMonthlyBudgetData(
   currentMonthTxs.forEach(t => currentSpentMap.set(t.category_id, { spent: t.spent, count: t.count }));
 
   // 3. Query previous month budgets
-  const prevBudgetRows = db.prepare(`
+  const prevBudgetRows = await db.prepare(`
     SELECT category_id, amount FROM budgets WHERE book_id = ? AND month = ?
   `).all(book.id, previousMonthStr) as { category_id: number; amount: number }[];
 
@@ -935,7 +935,7 @@ export function getMonthlyBudgetData(
   prevBudgetRows.forEach(b => prevBudgetMap.set(b.category_id, b.amount));
 
   // 4. Query previous month actuals
-  const prevMonthTxs = db.prepare(`
+  const prevMonthTxs = await db.prepare(`
     SELECT category_id, COALESCE(SUM(amount), 0) as spent
     FROM transactions
     WHERE book_id = ? AND date LIKE ? AND type = 'expense' AND category_id IS NOT NULL
@@ -946,7 +946,7 @@ export function getMonthlyBudgetData(
   prevMonthTxs.forEach(t => prevSpentMap.set(t.category_id, t.spent));
 
   // 5. Query 3-month trailing spending
-  const trailingTxs = db.prepare(`
+  const trailingTxs = await db.prepare(`
     SELECT category_id, COALESCE(SUM(amount), 0) as total_spent
     FROM transactions
     WHERE book_id = ? AND date >= ? AND date < ? AND type = 'expense' AND category_id IS NOT NULL
@@ -1068,13 +1068,13 @@ export function getMonthlyBudgetData(
 
   for (let m = 1; m <= 12; m++) {
     const ymStr = `${year}-${String(m).padStart(2, '0')}`;
-    const mBudgetRow = db.prepare(`
+    const mBudgetRow = await db.prepare(`
       SELECT COALESCE(SUM(amount), 0) as b_total
       FROM budgets
       WHERE book_id = ? AND month = ?
     `).get(book.id, ymStr) as { b_total: number };
 
-    const mSpentRow = db.prepare(`
+    const mSpentRow = await db.prepare(`
       SELECT COALESCE(SUM(amount), 0) as s_total
       FROM transactions
       WHERE book_id = ? AND date LIKE ? AND type = 'expense'
@@ -1155,7 +1155,7 @@ export function getMonthlyBudgetData(
 }
 
 // --- Transactions ---
-export function createTransaction(data: {
+export async function createTransaction(data: {
   book_id: number;
   date: string;
   amount: number;
@@ -1171,20 +1171,20 @@ export function createTransaction(data: {
   income_category?: string;
   repayment_due_date?: string;
   repayment_status?: string;
-}): Transaction {
-  const db = getDb();
-  const account = db.prepare('SELECT currency_code FROM accounts WHERE id = ?').get(data.account_id) as { currency_code: string };
+}): Promise<Transaction> {
+  const db = getAsyncDb();
+  const account = await db.prepare('SELECT currency_code FROM accounts WHERE id = ?').get(data.account_id) as { currency_code: string };
   const currencyCode = account?.currency_code || 'INR';
   
   // Get current conversion rate to master
-  const curr = db.prepare('SELECT exchange_rate_to_master FROM currencies WHERE code = ?').get(currencyCode) as { exchange_rate_to_master: number };
+  const curr = await db.prepare('SELECT exchange_rate_to_master FROM currencies WHERE code = ?').get(currencyCode) as { exchange_rate_to_master: number };
   const rate = curr?.exchange_rate_to_master || 1.0;
   const masterAmount = data.amount * rate;
   const type = data.type || 'expense';
 
-  db.exec('BEGIN TRANSACTION;');
+  await db.exec('BEGIN TRANSACTION;');
   try {
-    const res = db.prepare(`
+    const res = await db.prepare(`
       INSERT INTO transactions (
         book_id, date, amount, currency_code, exchange_rate_to_master,
         amount_master_currency, category_id, account_id, payment_method,
@@ -1214,49 +1214,49 @@ export function createTransaction(data: {
 
     // Update account balances based on type
     if (type === 'expense') {
-      db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(data.amount, data.account_id);
+      await db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(data.amount, data.account_id);
     } else if (type === 'income') {
-      db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(data.amount, data.account_id);
+      await db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(data.amount, data.account_id);
     } else if (type === 'bank_withdrawal') {
       // Transfer from Bank account to Cash in hand
-      db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(data.amount, data.account_id);
+      await db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(data.amount, data.account_id);
       if (data.to_account_id) {
-        db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(data.amount, data.to_account_id);
+        await db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(data.amount, data.to_account_id);
       }
     } else if (type === 'card_settlement') {
       // Bank pays credit card
-      db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(data.amount, data.account_id);
+      await db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(data.amount, data.account_id);
       if (data.to_account_id) {
-        db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(data.amount, data.to_account_id);
+        await db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(data.amount, data.to_account_id);
       }
     } else if (type === 'transfer') {
       // Generic Account Transfer (From source account to destination account)
-      db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(data.amount, data.account_id);
+      await db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(data.amount, data.account_id);
       if (data.to_account_id) {
-        const toAcc = db.prepare('SELECT currency_code FROM accounts WHERE id = ?').get(data.to_account_id) as { currency_code: string } | undefined;
+        const toAcc = await db.prepare('SELECT currency_code FROM accounts WHERE id = ?').get(data.to_account_id) as { currency_code: string } | undefined;
         let creditAmount = data.amount;
         if (toAcc && toAcc.currency_code !== currencyCode) {
-          const toCurr = db.prepare('SELECT exchange_rate_to_master FROM currencies WHERE code = ?').get(toAcc.currency_code) as { exchange_rate_to_master: number } | undefined;
+          const toCurr = await db.prepare('SELECT exchange_rate_to_master FROM currencies WHERE code = ?').get(toAcc.currency_code) as { exchange_rate_to_master: number } | undefined;
           const toRate = toCurr?.exchange_rate_to_master || 1.0;
           if (toRate > 0) {
             creditAmount = Number(((data.amount * rate) / toRate).toFixed(2));
           }
         }
-        db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(creditAmount, data.to_account_id);
+        await db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(creditAmount, data.to_account_id);
       }
     }
 
-    db.exec('COMMIT;');
+    await db.exec('COMMIT;');
     const newTxId = Number(res.lastInsertRowid);
-    return getTransactionById(newTxId)!;
+    return (await getTransactionById(newTxId))!;
   } catch (e) {
-    db.exec('ROLLBACK;');
+    await db.exec('ROLLBACK;');
     throw e;
   }
 }
 
-export function getTransactionById(id: number, userId?: number): Transaction | null {
-  const db = getDb();
+export async function getTransactionById(id: number, userId?: number): Promise<Transaction | null> {
+  const db = getAsyncDb();
   let query = `
     SELECT t.*, c.name as category_name, c.group_name as category_group, c.color as category_color,
            a.name as account_name, a.type as account_type,
@@ -1275,53 +1275,53 @@ export function getTransactionById(id: number, userId?: number): Transaction | n
     query += ' AND b.user_id = ?';
     params.push(userId);
   }
-  const row = db.prepare(query).get(...params) as unknown as Transaction;
+  const row = await db.prepare(query).get(...params) as unknown as Transaction;
   return row || null;
 }
 
-export function deleteTransaction(id: number, userId?: number): void {
-  const db = getDb();
-  const tx = getTransactionById(id, userId);
+export async function deleteTransaction(id: number, userId?: number): Promise<void> {
+  const db = getAsyncDb();
+  const tx = await getTransactionById(id, userId);
   if (!tx) return;
 
-  db.exec('BEGIN TRANSACTION;');
+  await db.exec('BEGIN TRANSACTION;');
   try {
     // Revert account balance effects
     if (tx.type === 'expense') {
-      db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(tx.amount, tx.account_id);
+      await db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(tx.amount, tx.account_id);
     } else if (tx.type === 'income') {
-      db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(tx.amount, tx.account_id);
+      await db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(tx.amount, tx.account_id);
     } else if (tx.type === 'bank_withdrawal' || tx.type === 'card_settlement') {
-      db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(tx.amount, tx.account_id);
+      await db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(tx.amount, tx.account_id);
       if (tx.to_account_id) {
-        db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(tx.amount, tx.to_account_id);
+        await db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(tx.amount, tx.to_account_id);
       }
     } else if (tx.type === 'transfer') {
-      db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(tx.amount, tx.account_id);
+      await db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(tx.amount, tx.account_id);
       if (tx.to_account_id) {
-        const toAcc = db.prepare('SELECT currency_code FROM accounts WHERE id = ?').get(tx.to_account_id) as { currency_code: string } | undefined;
+        const toAcc = await db.prepare('SELECT currency_code FROM accounts WHERE id = ?').get(tx.to_account_id) as { currency_code: string } | undefined;
         let creditAmount = tx.amount;
         if (toAcc && toAcc.currency_code !== tx.currency_code) {
-          const toCurr = db.prepare('SELECT exchange_rate_to_master FROM currencies WHERE code = ?').get(toAcc.currency_code) as { exchange_rate_to_master: number } | undefined;
+          const toCurr = await db.prepare('SELECT exchange_rate_to_master FROM currencies WHERE code = ?').get(toAcc.currency_code) as { exchange_rate_to_master: number } | undefined;
           const toRate = toCurr?.exchange_rate_to_master || 1.0;
           const fromRate = tx.exchange_rate_to_master || 1.0;
           if (toRate > 0) {
             creditAmount = Number(((tx.amount * fromRate) / toRate).toFixed(2));
           }
         }
-        db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(creditAmount, tx.to_account_id);
+        await db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(creditAmount, tx.to_account_id);
       }
     }
 
-    db.prepare('DELETE FROM transactions WHERE id = ?').run(id);
-    db.exec('COMMIT;');
+    await db.prepare('DELETE FROM transactions WHERE id = ?').run(id);
+    await db.exec('COMMIT;');
   } catch (e) {
-    db.exec('ROLLBACK;');
+    await db.exec('ROLLBACK;');
     throw e;
   }
 }
 
-export function getTransactions(filter: {
+export async function getTransactions(filter: {
   book_id?: number;
   month?: string; // YYYY-MM
   date?: string; // YYYY-MM-DD
@@ -1333,8 +1333,8 @@ export function getTransactions(filter: {
   search?: string;
   limit?: number;
   userId?: number;
-}): Transaction[] {
-  const db = getDb();
+}): Promise<Transaction[]> {
+  const db = getAsyncDb();
   let query = `
     SELECT t.*, c.name as category_name, c.group_name as category_group, c.color as category_color,
            a.name as account_name, a.type as account_type,
@@ -1408,22 +1408,22 @@ export function getTransactions(filter: {
     params.push(filter.limit);
   }
 
-  return db.prepare(query).all(...params) as unknown as Transaction[];
+  return await db.prepare(query).all(...params) as unknown as Transaction[];
 }
 
 // --- Monthly Worksheet GL Heads Preferences Engine ---
 
-export function getMonthlyWorksheetGlPreferences(bookId: number, monthStr: string, userId: number): MonthlyGlPreferences {
-  const db = getDb();
+export async function getMonthlyWorksheetGlPreferences(bookId: number, monthStr: string, userId: number): Promise<MonthlyGlPreferences> {
+  const db = getAsyncDb();
 
   // 1. Check saved heads in monthly_worksheet_heads
-  const savedHeadRows = db.prepare(`
+  const savedHeadRows = await db.prepare(`
     SELECT head_id FROM monthly_worksheet_heads
     WHERE user_id = ? AND book_id = ? AND month = ?
     ORDER BY sort_order ASC, id ASC
   `).all(userId, bookId, monthStr) as { head_id: number }[];
 
-  const savedCatRows = db.prepare(`
+  const savedCatRows = await db.prepare(`
     SELECT category_id FROM monthly_worksheet_categories
     WHERE user_id = ? AND book_id = ? AND month = ?
   `).all(userId, bookId, monthStr) as { category_id: number }[];
@@ -1431,7 +1431,7 @@ export function getMonthlyWorksheetGlPreferences(bookId: number, monthStr: strin
   const hasSavedPreferences = savedHeadRows.length > 0 || savedCatRows.length > 0;
 
   // 2. Find transactions in this month and book to get heads/categories with transactions
-  const txSummaryRows = db.prepare(`
+  const txSummaryRows = await db.prepare(`
     SELECT t.category_id, c.head_id, COUNT(*) as tx_count
     FROM transactions t
     JOIN categories c ON t.category_id = c.id
@@ -1483,14 +1483,14 @@ export function getMonthlyWorksheetGlPreferences(bookId: number, monthStr: strin
   }
 
   // 4. Get available heads with sub_heads for this user
-  const availableHeads = getCategoryHeads(userId);
+  const availableHeads = await getCategoryHeads(userId);
 
   // 5. Look for previous month's preferences
   const [y, m] = monthStr.split('-').map(Number);
   const prevDate = new Date(y, m - 2, 1);
   const prevMonthStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
 
-  const prevMonthHeads = db.prepare(`
+  const prevMonthHeads = await db.prepare(`
     SELECT DISTINCT head_id FROM monthly_worksheet_heads
     WHERE user_id = ? AND book_id = ? AND month = ?
   `).all(userId, bookId, prevMonthStr) as { head_id: number }[];
@@ -1504,7 +1504,7 @@ export function getMonthlyWorksheetGlPreferences(bookId: number, monthStr: strin
     };
   } else {
     // Check if any previous month has saved heads
-    const anyPrev = db.prepare(`
+    const anyPrev = await db.prepare(`
       SELECT month, COUNT(DISTINCT head_id) as count
       FROM monthly_worksheet_heads
       WHERE user_id = ? AND book_id = ? AND month < ?
@@ -1514,7 +1514,7 @@ export function getMonthlyWorksheetGlPreferences(bookId: number, monthStr: strin
     `).get(userId, bookId, monthStr) as { month: string; count: number } | undefined;
 
     if (anyPrev) {
-      const anyPrevHeads = db.prepare(`
+      const anyPrevHeads = await db.prepare(`
         SELECT DISTINCT head_id FROM monthly_worksheet_heads
         WHERE user_id = ? AND book_id = ? AND month = ?
       `).all(userId, bookId, anyPrev.month) as { head_id: number }[];
@@ -1541,14 +1541,14 @@ export function getMonthlyWorksheetGlPreferences(bookId: number, monthStr: strin
   };
 }
 
-export function saveMonthlyWorksheetGlPreferences(data: {
+export async function saveMonthlyWorksheetGlPreferences(data: {
   bookId: number;
   monthStr: string;
   userId: number;
   headIds: number[];
   categoryIds?: number[];
-}): MonthlyGlPreferences {
-  const db = getDb();
+}): Promise<MonthlyGlPreferences> {
+  const db = getAsyncDb();
   const { bookId, monthStr, userId, headIds } = data;
 
   // Find all categories for the selected heads
@@ -1556,7 +1556,7 @@ export function saveMonthlyWorksheetGlPreferences(data: {
   if (!categoryIdsToSave || categoryIdsToSave.length === 0) {
     if (headIds.length > 0) {
       const placeholders = headIds.map(() => '?').join(',');
-      const catRows = db.prepare(`
+      const catRows = await db.prepare(`
         SELECT id FROM categories
         WHERE head_id IN (${placeholders}) AND (user_id = ? OR user_id IS NULL)
       `).all(...headIds, userId) as { id: number }[];
@@ -1567,7 +1567,7 @@ export function saveMonthlyWorksheetGlPreferences(data: {
   }
 
   // Ensure any category with transactions in this month is also preserved
-  const txCats = db.prepare(`
+  const txCats = await db.prepare(`
     SELECT DISTINCT t.category_id, c.head_id
     FROM transactions t
     JOIN categories c ON t.category_id = c.id
@@ -1586,57 +1586,58 @@ export function saveMonthlyWorksheetGlPreferences(data: {
     }
   }
 
-  db.exec('BEGIN TRANSACTION;');
+  await db.exec('BEGIN TRANSACTION;');
   try {
-    db.prepare(`
+    await db.prepare(`
       DELETE FROM monthly_worksheet_heads
       WHERE user_id = ? AND book_id = ? AND month = ?
     `).run(userId, bookId, monthStr);
 
-    db.prepare(`
+    await db.prepare(`
       DELETE FROM monthly_worksheet_categories
       WHERE user_id = ? AND book_id = ? AND month = ?
     `).run(userId, bookId, monthStr);
 
-    const insertHead = db.prepare(`
+    const insertHead = await db.prepare(`
       INSERT INTO monthly_worksheet_heads (user_id, book_id, month, head_id, sort_order)
       VALUES (?, ?, ?, ?, ?)
     `);
-    finalHeadIds.forEach((headId, idx) => {
-      insertHead.run(userId, bookId, monthStr, headId, idx + 1);
-    });
+    for (let idx = 0; idx < finalHeadIds.length; idx++) {
+      const headId = finalHeadIds[idx];
+      await insertHead.run(userId, bookId, monthStr, headId, idx + 1);
+    }
 
-    const insertCat = db.prepare(`
+    const insertCat = await db.prepare(`
       INSERT INTO monthly_worksheet_categories (user_id, book_id, month, category_id)
       VALUES (?, ?, ?, ?)
     `);
-    finalCategoryIds.forEach((catId) => {
-      insertCat.run(userId, bookId, monthStr, catId);
-    });
+    for (const catId of finalCategoryIds) {
+      await insertCat.run(userId, bookId, monthStr, catId);
+    }
 
-    db.exec('COMMIT;');
-    return getMonthlyWorksheetGlPreferences(bookId, monthStr, userId);
+    await db.exec('COMMIT;');
+    return await getMonthlyWorksheetGlPreferences(bookId, monthStr, userId);
   } catch (e) {
-    db.exec('ROLLBACK;');
+    await db.exec('ROLLBACK;');
     throw e;
   }
 }
 
-export function addGlHeadToMonth(bookId: number, monthStr: string, userId: number, headId: number): MonthlyGlPreferences {
-  const current = getMonthlyWorksheetGlPreferences(bookId, monthStr, userId);
+export async function addGlHeadToMonth(bookId: number, monthStr: string, userId: number, headId: number): Promise<MonthlyGlPreferences> {
+  const current = await getMonthlyWorksheetGlPreferences(bookId, monthStr, userId);
   const headIds = [...new Set([...current.selectedHeadIds, headId])];
 
-  const db = getDb();
-  const subCats = db.prepare(`
+  const db = getAsyncDb();
+  const subCats = await db.prepare(`
     SELECT id FROM categories WHERE head_id = ? AND (user_id = ? OR user_id IS NULL)
   `).all(headId, userId) as { id: number }[];
 
   const categoryIds = [...new Set([...current.selectedCategoryIds, ...subCats.map(c => c.id)])];
-  return saveMonthlyWorksheetGlPreferences({ bookId, monthStr, userId, headIds, categoryIds });
+  return await saveMonthlyWorksheetGlPreferences({ bookId, monthStr, userId, headIds, categoryIds });
 }
 
-export function removeGlHeadFromMonth(bookId: number, monthStr: string, userId: number, headId: number): MonthlyGlPreferences {
-  const current = getMonthlyWorksheetGlPreferences(bookId, monthStr, userId);
+export async function removeGlHeadFromMonth(bookId: number, monthStr: string, userId: number, headId: number): Promise<MonthlyGlPreferences> {
+  const current = await getMonthlyWorksheetGlPreferences(bookId, monthStr, userId);
   if (current.headsWithTransactions.includes(headId)) {
     throw new Error('Cannot remove a GL head that has transactions recorded in this month.');
   }
@@ -1646,26 +1647,26 @@ export function removeGlHeadFromMonth(bookId: number, monthStr: string, userId: 
 
   if (!current.hasSavedPreferences) {
     baseHeadIds = current.availableHeads.map((h) => h.id);
-    const allCats = getCategories(undefined, undefined, userId);
+    const allCats = await getCategories(undefined, undefined, userId);
     baseCategoryIds = allCats.map((c) => c.id);
   }
 
   const headIds = baseHeadIds.filter((id) => id !== headId);
-  const db = getDb();
-  const subCats = db.prepare(`
+  const db = getAsyncDb();
+  const subCats = await db.prepare(`
     SELECT id FROM categories WHERE head_id = ?
   `).all(headId) as { id: number }[];
   const subCatIdSet = new Set(subCats.map((c) => c.id));
 
   const categoryIds = baseCategoryIds.filter((id) => !subCatIdSet.has(id));
-  return saveMonthlyWorksheetGlPreferences({ bookId, monthStr, userId, headIds, categoryIds });
+  return await saveMonthlyWorksheetGlPreferences({ bookId, monthStr, userId, headIds, categoryIds });
 }
 
-export function copyPreviousMonthGlPreferences(bookId: number, currentMonthStr: string, userId: number, sourceMonthStr?: string): MonthlyGlPreferences {
-  const db = getDb();
+export async function copyPreviousMonthGlPreferences(bookId: number, currentMonthStr: string, userId: number, sourceMonthStr?: string): Promise<MonthlyGlPreferences> {
+  const db = getAsyncDb();
   let source = sourceMonthStr;
   if (!source) {
-    const prevPref = db.prepare(`
+    const prevPref = await db.prepare(`
       SELECT month FROM monthly_worksheet_heads
       WHERE user_id = ? AND book_id = ? AND month < ?
       ORDER BY month DESC LIMIT 1
@@ -1679,12 +1680,12 @@ export function copyPreviousMonthGlPreferences(bookId: number, currentMonthStr: 
     source = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
   }
 
-  const prevPrefs = getMonthlyWorksheetGlPreferences(bookId, source, userId);
+  const prevPrefs = await getMonthlyWorksheetGlPreferences(bookId, source, userId);
   if (prevPrefs.selectedHeadIds.length === 0) {
     throw new Error(`No GL heads were found in previous month (${source}) to copy.`);
   }
 
-  return saveMonthlyWorksheetGlPreferences({
+  return await saveMonthlyWorksheetGlPreferences({
     bookId,
     monthStr: currentMonthStr,
     userId,
@@ -1693,59 +1694,60 @@ export function copyPreviousMonthGlPreferences(bookId: number, currentMonthStr: 
   });
 }
 
-export function addAllGlHeadsToMonth(bookId: number, monthStr: string, userId: number): MonthlyGlPreferences {
-  const allHeads = getCategoryHeads(userId);
+export async function addAllGlHeadsToMonth(bookId: number, monthStr: string, userId: number): Promise<MonthlyGlPreferences> {
+  const allHeads = await getCategoryHeads(userId);
   const headIds = allHeads.map(h => h.id);
-  const allCats = getCategories(undefined, undefined, userId);
+  const allCats = await getCategories(undefined, undefined, userId);
   const categoryIds = allCats.map(c => c.id);
-  return saveMonthlyWorksheetGlPreferences({ bookId, monthStr, userId, headIds, categoryIds });
+  return await saveMonthlyWorksheetGlPreferences({ bookId, monthStr, userId, headIds, categoryIds });
 }
 
-export function reorderMonthlyGlHeads(
+export async function reorderMonthlyGlHeads(
   bookId: number,
   monthStr: string,
   userId: number,
   orderedHeadIds: number[]
-): MonthlyGlPreferences {
-  const db = getDb();
-  db.exec('BEGIN TRANSACTION;');
+): Promise<MonthlyGlPreferences> {
+  const db = getAsyncDb();
+  await db.exec('BEGIN TRANSACTION;');
   try {
-    const updateStmt = db.prepare(`
+    const updateStmt = await db.prepare(`
       UPDATE monthly_worksheet_heads
       SET sort_order = ?
       WHERE user_id = ? AND book_id = ? AND month = ? AND head_id = ?
     `);
-    orderedHeadIds.forEach((headId, index) => {
-      updateStmt.run(index + 1, userId, bookId, monthStr, headId);
-    });
-    db.exec('COMMIT;');
-    return getMonthlyWorksheetGlPreferences(bookId, monthStr, userId);
+    for (let index = 0; index < orderedHeadIds.length; index++) {
+      const headId = orderedHeadIds[index];
+      await updateStmt.run(index + 1, userId, bookId, monthStr, headId);
+    }
+    await db.exec('COMMIT;');
+    return await getMonthlyWorksheetGlPreferences(bookId, monthStr, userId);
   } catch (e) {
-    db.exec('ROLLBACK;');
+    await db.exec('ROLLBACK;');
     throw e;
   }
 }
 
-export function moveMonthlyGlHead(
+export async function moveMonthlyGlHead(
   bookId: number,
   monthStr: string,
   userId: number,
   headId: number,
   direction: 'up' | 'down'
-): MonthlyGlPreferences {
-  const prefs = getMonthlyWorksheetGlPreferences(bookId, monthStr, userId);
+): Promise<MonthlyGlPreferences> {
+  const prefs = await getMonthlyWorksheetGlPreferences(bookId, monthStr, userId);
   let currentHeadIds = [...prefs.selectedHeadIds];
 
   // If preferences weren't explicitly saved yet, initialize them first
   if (!prefs.hasSavedPreferences) {
-    saveMonthlyWorksheetGlPreferences({
+    await saveMonthlyWorksheetGlPreferences({
       bookId,
       monthStr,
       userId,
       headIds: currentHeadIds,
       categoryIds: prefs.selectedCategoryIds,
     });
-    const refreshed = getMonthlyWorksheetGlPreferences(bookId, monthStr, userId);
+    const refreshed = await getMonthlyWorksheetGlPreferences(bookId, monthStr, userId);
     currentHeadIds = [...refreshed.selectedHeadIds];
   }
 
@@ -1762,25 +1764,25 @@ export function moveMonthlyGlHead(
   currentHeadIds[index] = currentHeadIds[targetIndex];
   currentHeadIds[targetIndex] = temp;
 
-  return reorderMonthlyGlHeads(bookId, monthStr, userId, currentHeadIds);
+  return await reorderMonthlyGlHeads(bookId, monthStr, userId, currentHeadIds);
 }
 
 // --- Monthly Worksheet Matrix Engine ---
-export function getMonthlyWorksheetData(bookId: number, year: number, month: number, userId?: number): MonthlyWorksheetData {
-  const db = getDb();
-  const book = (bookId ? getAccountBookById(bookId, userId) : null) || getAccountBooks(userId)[0];
+export async function getMonthlyWorksheetData(bookId: number, year: number, month: number, userId?: number): Promise<MonthlyWorksheetData> {
+  const db = getAsyncDb();
+  const book = (bookId ? await getAccountBookById(bookId, userId) : null) || (await getAccountBooks(userId))[0];
   if (!book) {
     throw new Error('No account book found. Please create an account book first.');
   }
-  const masterCurrency = getMasterCurrency();
+  const masterCurrency = await getMasterCurrency();
   const daysInMonth = getDaysInMonth(year, month);
   const monthStr = `${year}-${String(month).padStart(2, '0')}`;
   const monthName = getMonthName(month);
 
   // 1. Get Categories and Budgets filtered by user's GL Heads preferences for this month
   const effectiveUserId = userId || 1;
-  const glPrefs = getMonthlyWorksheetGlPreferences(book.id, monthStr, effectiveUserId);
-  const allCategories = getCategories(book.id, monthStr, userId);
+  const glPrefs = await getMonthlyWorksheetGlPreferences(book.id, monthStr, effectiveUserId);
+  const allCategories = await getCategories(book.id, monthStr, userId);
 
   let categories: Category[] = [];
   if (glPrefs.hasSavedPreferences) {
@@ -1804,7 +1806,7 @@ export function getMonthlyWorksheetData(bookId: number, year: number, month: num
   categories.forEach(c => categoriesMap.set(c.id, c));
 
   // 2. Fetch all transactions for this month and book
-  const transactions = getTransactions({
+  const transactions = await getTransactions({
     book_id: book.id,
     month: monthStr,
     userId,
@@ -1812,14 +1814,14 @@ export function getMonthlyWorksheetData(bookId: number, year: number, month: num
 
   // 3. Find opening cash for this book at beginning of month
   // Check cash account opening balance + net cash transactions prior to this month
-  const cashAccount = db.prepare(`
+  const cashAccount = await db.prepare(`
     SELECT id, opening_balance FROM accounts
     WHERE book_id = ? AND type = 'cash' LIMIT 1
   `).get(book.id) as { id: number; opening_balance: number } | undefined;
 
   let runningCashBalance = cashAccount?.opening_balance || 0;
   if (cashAccount) {
-    const priorCashFlow = db.prepare(`
+    const priorCashFlow = await db.prepare(`
       SELECT 
         COALESCE(SUM(CASE 
           WHEN type = 'bank_withdrawal' AND to_account_id = ? THEN amount
@@ -2007,19 +2009,19 @@ export function getMonthlyWorksheetData(bookId: number, year: number, month: num
 }
 
 // --- Consolidated Master Book Data Engine ---
-export function getConsolidatedMasterBookData(year: number, month: number, userId?: number): ConsolidatedMasterBookData {
-  const db = getDb();
-  const masterCurrency = getMasterCurrency();
+export async function getConsolidatedMasterBookData(year: number, month: number, userId?: number): Promise<ConsolidatedMasterBookData> {
+  const db = getAsyncDb();
+  const masterCurrency = await getMasterCurrency();
   const monthStr = `${year}-${String(month).padStart(2, '0')}`;
   const monthName = getMonthName(month);
 
-  const books = getAccountBooks(userId);
+  const books = await getAccountBooks(userId);
   const bookSummaries: ConsolidatedMasterBookData['books'] = [];
 
   let grandTotalMaster = 0;
 
   for (const b of books) {
-    const txs = db.prepare(`
+    const txs = await db.prepare(`
       SELECT 
         COALESCE(SUM(amount), 0) as local_total,
         COALESCE(SUM(amount_master_currency), 0) as master_total,
@@ -2038,7 +2040,7 @@ export function getConsolidatedMasterBookData(year: number, month: number, userI
   }
 
   // Category totals across all books in master currency
-  const catRows = userId ? (db.prepare(`
+  const catRows = userId ? (await db.prepare(`
     SELECT 
       c.id, c.name, c.group_name, c.icon, c.color, c.sort_order,
       COALESCE(SUM(t.amount_master_currency), 0) as total_master
@@ -2048,7 +2050,7 @@ export function getConsolidatedMasterBookData(year: number, month: number, userI
     GROUP BY c.id
     ORDER BY total_master DESC
   `).all(`${monthStr}%`, userId, userId) as unknown as (Category & { total_master: number })[])
-  : (db.prepare(`
+  : (await db.prepare(`
     SELECT 
       c.id, c.name, c.group_name, c.icon, c.color, c.sort_order,
       COALESCE(SUM(t.amount_master_currency), 0) as total_master
@@ -2076,12 +2078,12 @@ export function getConsolidatedMasterBookData(year: number, month: number, userI
   const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   for (let m = 1; m <= 12; m++) {
     const mPrefix = `${year}-${String(m).padStart(2, '0')}%`;
-    const mTotal = userId ? (db.prepare(`
+    const mTotal = userId ? (await db.prepare(`
       SELECT COALESCE(SUM(amount_master_currency), 0) as total
       FROM transactions
       WHERE date LIKE ? AND type = 'expense' AND book_id IN (SELECT id FROM account_books WHERE user_id = ?)
     `).get(mPrefix, userId) as { total: number })
-    : (db.prepare(`
+    : (await db.prepare(`
       SELECT COALESCE(SUM(amount_master_currency), 0) as total
       FROM transactions
       WHERE date LIKE ? AND type = 'expense'
@@ -2109,16 +2111,16 @@ export function getConsolidatedMasterBookData(year: number, month: number, userI
 // EXPENSES DASHBOARD DATA ENGINE
 // =========================================================
 
-export function getExpenseDashboardData(params: {
+export async function getExpenseDashboardData(params: {
   bookId?: number | 'all';
   year?: number;
   month?: number;
   period?: 'month' | 'year' | 'all';
   userId?: number;
-}): ExpenseDashboardData {
-  const db = getDb();
-  const masterCurrency = getMasterCurrency();
-  const books = getAccountBooks(params.userId);
+}): Promise<ExpenseDashboardData> {
+  const db = getAsyncDb();
+  const masterCurrency = await getMasterCurrency();
+  const books = await getAccountBooks(params.userId);
 
   const isConsolidated = params.bookId === 'all';
   const selectedBookId = isConsolidated ? null : (params.bookId || books[0]?.id || 1);
@@ -2126,14 +2128,14 @@ export function getExpenseDashboardData(params: {
 
   // Determine available years from database
   const yrRows = params.userId
-    ? (db.prepare(`
+    ? (await db.prepare(`
         SELECT DISTINCT CAST(substr(t.date, 1, 4) AS INTEGER) as yr
         FROM transactions t
         JOIN account_books b ON t.book_id = b.id
         WHERE t.type = 'expense' AND b.user_id = ?
         ORDER BY yr DESC
       `).all(params.userId) as { yr: number }[])
-    : (db.prepare(`
+    : (await db.prepare(`
         SELECT DISTINCT CAST(substr(date, 1, 4) AS INTEGER) as yr
         FROM transactions
         WHERE type = 'expense'
@@ -2201,7 +2203,7 @@ export function getExpenseDashboardData(params: {
     currentParams.push(getDateParam());
   }
 
-  const currentSummaryRow = db.prepare(`
+  const currentSummaryRow = await db.prepare(`
     SELECT 
       COALESCE(SUM(t.${amtCol}), 0) as total_expenses,
       COUNT(t.id) as count,
@@ -2231,7 +2233,7 @@ export function getExpenseDashboardData(params: {
     const prevMonthStr = `${prevYear}-${String(prevMonth).padStart(2, '0')}`;
     const prevParams = [...baseParams, `${prevMonthStr}%`];
 
-    const prevRow = db.prepare(`
+    const prevRow = await db.prepare(`
       SELECT COALESCE(SUM(t.${amtCol}), 0) as prev_total
       FROM transactions t
       WHERE t.type = 'expense'
@@ -2242,7 +2244,7 @@ export function getExpenseDashboardData(params: {
   } else if (period === 'year') {
     const prevYearStr = `${year - 1}`;
     const prevParams = [...baseParams, `${prevYearStr}%`];
-    const prevRow = db.prepare(`
+    const prevRow = await db.prepare(`
       SELECT COALESCE(SUM(t.${amtCol}), 0) as prev_total
       FROM transactions t
       WHERE t.type = 'expense'
@@ -2262,7 +2264,7 @@ export function getExpenseDashboardData(params: {
   // 3. Budgets check
   let totalBudget = 0;
   if (!isConsolidated && selectedBookId) {
-    const budgetRow = db.prepare(`
+    const budgetRow = await db.prepare(`
       SELECT COALESCE(SUM(amount), 0) as total_budget
       FROM budgets
       WHERE book_id = ? AND month = ?
@@ -2305,7 +2307,7 @@ export function getExpenseDashboardData(params: {
     HAVING total_amount > 0
     ORDER BY total_amount DESC
   `;
-  const catRows = db.prepare(catQuery).all(...currentParams) as {
+  const catRows = await db.prepare(catQuery).all(...currentParams) as {
     category_id: number;
     category_name: string;
     group_name: string;
@@ -2322,7 +2324,7 @@ export function getExpenseDashboardData(params: {
     // Load category budgets for this month if single book
     const catBudgetMap = new Map<number, number>();
     if (!isConsolidated && selectedBookId && period === 'month') {
-      const bRows = db.prepare('SELECT category_id, amount FROM budgets WHERE book_id = ? AND month = ?').all(selectedBookId, monthStr) as { category_id: number; amount: number }[];
+      const bRows = await db.prepare('SELECT category_id, amount FROM budgets WHERE book_id = ? AND month = ?').all(selectedBookId, monthStr) as { category_id: number; amount: number }[];
       bRows.forEach(b => catBudgetMap.set(b.category_id, b.amount));
     }
 
@@ -2351,7 +2353,7 @@ export function getExpenseDashboardData(params: {
   });
 
   // 4b. Category Heads Breakdown (Tata Neu Super-App Launcher)
-  const allHeads = getCategoryHeads(params.userId);
+  const allHeads = await getCategoryHeads(params.userId);
   const headMap = new Map<number, { headId: number; headName: string; headIcon: string; headColor: string; totalAmount: number; count: number }>();
   for (const h of allHeads) {
     headMap.set(h.id, {
@@ -2402,7 +2404,7 @@ export function getExpenseDashboardData(params: {
   for (let m = 1; m <= 12; m++) {
     const ymPrefix = `${year}-${String(m).padStart(2, '0')}`;
     const mParams = [...baseParams, `${ymPrefix}%`];
-    const mRow = db.prepare(`
+    const mRow = await db.prepare(`
       SELECT 
         COALESCE(SUM(t.${amtCol}), 0) as total,
         COALESCE(SUM(CASE WHEN t.payment_method = 'cash' THEN t.${amtCol} ELSE 0 END), 0) as cash,
@@ -2432,7 +2434,7 @@ export function getExpenseDashboardData(params: {
   for (let d = 1; d <= daysInMonth; d++) {
     const isoDate = formatDateISO(year, month, d);
     const dParams = [...baseParams, isoDate];
-    const dRow = db.prepare(`
+    const dRow = await db.prepare(`
       SELECT 
         COALESCE(SUM(t.${amtCol}), 0) as total,
         COALESCE(SUM(CASE WHEN t.payment_method = 'cash' THEN t.${amtCol} ELSE 0 END), 0) as cash,
@@ -2462,7 +2464,7 @@ export function getExpenseDashboardData(params: {
 
   // 8. Weekday Breakdown (Sun=0 to Sat=6)
   const weekdayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  const wdRows = db.prepare(`
+  const wdRows = await db.prepare(`
     SELECT 
       CAST(strftime('%w', t.date) AS INTEGER) as weekday,
       COALESCE(SUM(t.${amtCol}), 0) as total,
@@ -2493,7 +2495,7 @@ export function getExpenseDashboardData(params: {
   });
 
   // 9. Payment Method Breakdown
-  const pmRows = db.prepare(`
+  const pmRows = await db.prepare(`
     SELECT 
       t.payment_method,
       COALESCE(SUM(t.${amtCol}), 0) as amount,
@@ -2521,7 +2523,7 @@ export function getExpenseDashboardData(params: {
   }));
 
   // 10. Account Breakdown
-  const accRows = db.prepare(`
+  const accRows = await db.prepare(`
     SELECT 
       a.id,
       a.name as account_name,
@@ -2557,7 +2559,7 @@ export function getExpenseDashboardData(params: {
   }));
 
   // 11. Top Transactions (Highest outflows)
-  const topRows = db.prepare(`
+  const topRows = await db.prepare(`
     SELECT 
       t.*,
       c.name as category_name,
@@ -2657,8 +2659,8 @@ export function calculateNextDueDate(
   return formatDateISO(date.getFullYear(), date.getMonth() + 1, date.getDate());
 }
 
-export function getRecurringTransactions(userId?: number, bookId?: number, type?: string): RecurringTransaction[] {
-  const db = getDb();
+export async function getRecurringTransactions(userId?: number, bookId?: number, type?: string): Promise<RecurringTransaction[]> {
+  const db = getAsyncDb();
   let query = `
     SELECT r.*, b.name as book_name, a.name as account_name,
            c.name as category_name, curr.symbol as currency_symbol,
@@ -2685,11 +2687,11 @@ export function getRecurringTransactions(userId?: number, bookId?: number, type?
     params.push(type);
   }
   query += ' ORDER BY r.is_active DESC, r.next_due_date ASC, r.name ASC';
-  return db.prepare(query).all(...params) as unknown as RecurringTransaction[];
+  return await db.prepare(query).all(...params) as unknown as RecurringTransaction[];
 }
 
-export function getRecurringTransactionById(id: number, userId?: number): RecurringTransaction | null {
-  const db = getDb();
+export async function getRecurringTransactionById(id: number, userId?: number): Promise<RecurringTransaction | null> {
+  const db = getAsyncDb();
   let query = `
     SELECT r.*, b.name as book_name, a.name as account_name,
            c.name as category_name, curr.symbol as currency_symbol,
@@ -2707,11 +2709,11 @@ export function getRecurringTransactionById(id: number, userId?: number): Recurr
     query += ' AND (r.user_id = ? OR r.user_id IS NULL)';
     params.push(userId);
   }
-  const row = db.prepare(query).get(...params) as unknown as RecurringTransaction | undefined;
+  const row = await db.prepare(query).get(...params) as unknown as RecurringTransaction | undefined;
   return row || null;
 }
 
-export function createRecurringTransaction(data: {
+export async function createRecurringTransaction(data: {
   user_id?: number;
   book_id: number;
   account_id: number;
@@ -2730,14 +2732,14 @@ export function createRecurringTransaction(data: {
   description?: string | null;
   auto_post?: number;
   is_active?: number;
-}): RecurringTransaction {
-  const db = getDb();
-  const acc = db.prepare('SELECT currency_code FROM accounts WHERE id = ?').get(data.account_id) as { currency_code: string } | undefined;
+}): Promise<RecurringTransaction> {
+  const db = getAsyncDb();
+  const acc = await db.prepare('SELECT currency_code FROM accounts WHERE id = ?').get(data.account_id) as { currency_code: string } | undefined;
   const currencyCode = data.currency_code || acc?.currency_code || 'INR';
 
   const nextDue = data.start_date;
 
-  const res = db.prepare(`
+  const res = await db.prepare(`
     INSERT INTO recurring_transactions (
       user_id, book_id, account_id, category_id, type, to_account_id,
       name, amount, currency_code, frequency, day_of_month, day_of_week,
@@ -2766,10 +2768,10 @@ export function createRecurringTransaction(data: {
     data.is_active !== undefined ? data.is_active : 1
   );
 
-  return getRecurringTransactionById(Number(res.lastInsertRowid), data.user_id)!;
+  return (await getRecurringTransactionById(Number(res.lastInsertRowid), data.user_id))!;
 }
 
-export function updateRecurringTransaction(
+export async function updateRecurringTransaction(
   id: number,
   data: Partial<{
     book_id: number;
@@ -2792,12 +2794,12 @@ export function updateRecurringTransaction(
     is_active: number;
   }>,
   userId?: number
-): RecurringTransaction {
-  const db = getDb();
-  const current = getRecurringTransactionById(id, userId);
+): Promise<RecurringTransaction> {
+  const db = getAsyncDb();
+  const current = await getRecurringTransactionById(id, userId);
   if (!current) throw new Error('Recurring transaction not found');
 
-  db.prepare(`
+  await db.prepare(`
     UPDATE recurring_transactions
     SET book_id = ?,
         account_id = ?,
@@ -2840,37 +2842,37 @@ export function updateRecurringTransaction(
     id
   );
 
-  return getRecurringTransactionById(id, userId)!;
+  return (await getRecurringTransactionById(id, userId))!;
 }
 
-export function deleteRecurringTransaction(id: number, userId?: number): void {
-  const db = getDb();
+export async function deleteRecurringTransaction(id: number, userId?: number): Promise<void> {
+  const db = getAsyncDb();
   let query = 'DELETE FROM recurring_transactions WHERE id = ?';
   const params: (string | number)[] = [id];
   if (userId) {
     query += ' AND (user_id = ? OR user_id IS NULL)';
     params.push(userId);
   }
-  db.prepare(query).run(...params);
+  await db.prepare(query).run(...params);
 }
 
-export function processRecurringTransaction(id: number, postDate?: string, userId?: number): {
+export async function processRecurringTransaction(id: number, postDate?: string, userId?: number): Promise<{
   success: boolean;
   transaction: Transaction;
   nextDueDate: string;
-} {
-  const db = getDb();
-  const item = getRecurringTransactionById(id, userId);
+}> {
+  const db = getAsyncDb();
+  const item = await getRecurringTransactionById(id, userId);
   if (!item) throw new Error('Recurring item not found');
 
   const executionDate = postDate || item.next_due_date || formatDateISO(new Date().getFullYear(), new Date().getMonth() + 1, new Date().getDate());
 
   // Determine payment method based on account type
-  const acc = db.prepare('SELECT type FROM accounts WHERE id = ?').get(item.account_id) as { type: string } | undefined;
+  const acc = await db.prepare('SELECT type FROM accounts WHERE id = ?').get(item.account_id) as { type: string } | undefined;
   const pm: PaymentMethod = acc?.type === 'cash' ? 'cash' : acc?.type === 'credit_card' ? 'credit_card' : 'debit_card';
 
   // Create the actual transaction
-  const tx = createTransaction({
+  const tx = await createTransaction({
     book_id: item.book_id,
     date: executionDate,
     amount: item.amount,
@@ -2886,7 +2888,7 @@ export function processRecurringTransaction(id: number, postDate?: string, userI
   // Calculate next due date
   const nextDue = calculateNextDueDate(item.frequency, executionDate, item.day_of_month, item.day_of_week);
 
-  db.prepare(`
+  await db.prepare(`
     UPDATE recurring_transactions
     SET last_processed_date = ?, next_due_date = ?
     WHERE id = ?
@@ -2903,19 +2905,19 @@ export function processRecurringTransaction(id: number, postDate?: string, userI
 // INCOME & INFLOW QUERIES ENGINE
 // =========================================================
 
-export function toggleHandLoanRepayment(
+export async function toggleHandLoanRepayment(
   id: number,
   status: 'pending' | 'repaid',
   userId?: number
-): Transaction | null {
-  const db = getDb();
-  const tx = getTransactionById(id, userId);
+): Promise<Transaction | null> {
+  const db = getAsyncDb();
+  const tx = await getTransactionById(id, userId);
   if (!tx) return null;
-  db.prepare('UPDATE transactions SET repayment_status = ? WHERE id = ?').run(status, id);
-  return getTransactionById(id, userId);
+  await db.prepare('UPDATE transactions SET repayment_status = ? WHERE id = ?').run(status, id);
+  return await getTransactionById(id, userId);
 }
 
-export function updateTransaction(
+export async function updateTransaction(
   id: number,
   data: {
     book_id?: number;
@@ -2935,21 +2937,21 @@ export function updateTransaction(
     repayment_status?: string;
   },
   userId?: number
-): Transaction | null {
-  const db = getDb();
-  const tx = getTransactionById(id, userId);
+): Promise<Transaction | null> {
+  const db = getAsyncDb();
+  const tx = await getTransactionById(id, userId);
   if (!tx) return null;
 
-  db.exec('BEGIN TRANSACTION;');
+  await db.exec('BEGIN TRANSACTION;');
   try {
     const newAmount = data.amount !== undefined ? data.amount : tx.amount;
     const newAccountId = data.account_id !== undefined ? data.account_id : tx.account_id;
     const newType = data.type || tx.type;
     const newToAccountId = data.to_account_id !== undefined ? data.to_account_id : tx.to_account_id;
 
-    const account = db.prepare('SELECT currency_code FROM accounts WHERE id = ?').get(newAccountId) as { currency_code: string } | undefined;
+    const account = await db.prepare('SELECT currency_code FROM accounts WHERE id = ?').get(newAccountId) as { currency_code: string } | undefined;
     const currencyCode = account?.currency_code || tx.currency_code;
-    const curr = db.prepare('SELECT exchange_rate_to_master FROM currencies WHERE code = ?').get(currencyCode) as { exchange_rate_to_master: number } | undefined;
+    const curr = await db.prepare('SELECT exchange_rate_to_master FROM currencies WHERE code = ?').get(currencyCode) as { exchange_rate_to_master: number } | undefined;
     const rate = curr?.exchange_rate_to_master || 1.0;
     const masterAmount = newAmount * rate;
 
@@ -2962,59 +2964,59 @@ export function updateTransaction(
     if (balanceAffected) {
       // Revert old effect
       if (tx.type === 'expense') {
-        db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(tx.amount, tx.account_id);
+        await db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(tx.amount, tx.account_id);
       } else if (tx.type === 'income') {
-        db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(tx.amount, tx.account_id);
+        await db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(tx.amount, tx.account_id);
       } else if (tx.type === 'bank_withdrawal' || tx.type === 'card_settlement') {
-        db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(tx.amount, tx.account_id);
+        await db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(tx.amount, tx.account_id);
         if (tx.to_account_id) {
-          db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(tx.amount, tx.to_account_id);
+          await db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(tx.amount, tx.to_account_id);
         }
       } else if (tx.type === 'transfer') {
-        db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(tx.amount, tx.account_id);
+        await db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(tx.amount, tx.account_id);
         if (tx.to_account_id) {
-          const toAcc = db.prepare('SELECT currency_code FROM accounts WHERE id = ?').get(tx.to_account_id) as { currency_code: string } | undefined;
+          const toAcc = await db.prepare('SELECT currency_code FROM accounts WHERE id = ?').get(tx.to_account_id) as { currency_code: string } | undefined;
           let creditAmount = tx.amount;
           if (toAcc && toAcc.currency_code !== tx.currency_code) {
-            const toCurr = db.prepare('SELECT exchange_rate_to_master FROM currencies WHERE code = ?').get(toAcc.currency_code) as { exchange_rate_to_master: number } | undefined;
+            const toCurr = await db.prepare('SELECT exchange_rate_to_master FROM currencies WHERE code = ?').get(toAcc.currency_code) as { exchange_rate_to_master: number } | undefined;
             const toRate = toCurr?.exchange_rate_to_master || 1.0;
             const fromRate = tx.exchange_rate_to_master || 1.0;
             if (toRate > 0) {
               creditAmount = Number(((tx.amount * fromRate) / toRate).toFixed(2));
             }
           }
-          db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(creditAmount, tx.to_account_id);
+          await db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(creditAmount, tx.to_account_id);
         }
       }
 
       // Apply new effect
       if (newType === 'expense') {
-        db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(newAmount, newAccountId);
+        await db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(newAmount, newAccountId);
       } else if (newType === 'income') {
-        db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(newAmount, newAccountId);
+        await db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(newAmount, newAccountId);
       } else if (newType === 'bank_withdrawal' || newType === 'card_settlement') {
-        db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(newAmount, newAccountId);
+        await db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(newAmount, newAccountId);
         if (newToAccountId) {
-          db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(newAmount, newToAccountId);
+          await db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(newAmount, newToAccountId);
         }
       } else if (newType === 'transfer') {
-        db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(newAmount, newAccountId);
+        await db.prepare('UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?').run(newAmount, newAccountId);
         if (newToAccountId) {
-          const toAcc = db.prepare('SELECT currency_code FROM accounts WHERE id = ?').get(newToAccountId) as { currency_code: string } | undefined;
+          const toAcc = await db.prepare('SELECT currency_code FROM accounts WHERE id = ?').get(newToAccountId) as { currency_code: string } | undefined;
           let creditAmount = newAmount;
           if (toAcc && toAcc.currency_code !== currencyCode) {
-            const toCurr = db.prepare('SELECT exchange_rate_to_master FROM currencies WHERE code = ?').get(toAcc.currency_code) as { exchange_rate_to_master: number } | undefined;
+            const toCurr = await db.prepare('SELECT exchange_rate_to_master FROM currencies WHERE code = ?').get(toAcc.currency_code) as { exchange_rate_to_master: number } | undefined;
             const toRate = toCurr?.exchange_rate_to_master || 1.0;
             if (toRate > 0) {
               creditAmount = Number(((newAmount * rate) / toRate).toFixed(2));
             }
           }
-          db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(creditAmount, newToAccountId);
+          await db.prepare('UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?').run(creditAmount, newToAccountId);
         }
       }
     }
 
-    db.prepare(`
+    await db.prepare(`
       UPDATE transactions
       SET book_id = COALESCE(?, book_id),
           date = COALESCE(?, date),
@@ -3057,15 +3059,15 @@ export function updateTransaction(
       id
     );
 
-    db.exec('COMMIT;');
-    return getTransactionById(id, userId);
+    await db.exec('COMMIT;');
+    return await getTransactionById(id, userId);
   } catch (e) {
-    db.exec('ROLLBACK;');
+    await db.exec('ROLLBACK;');
     throw e;
   }
 }
 
-export function getIncomeDashboardData(params: {
+export async function getIncomeDashboardData(params: {
   bookId?: number | 'all';
   year: number;
   month?: number | null;
@@ -3073,10 +3075,10 @@ export function getIncomeDashboardData(params: {
   repaymentStatus?: string;
   search?: string;
   userId?: number;
-}): IncomeDashboardData {
-  const db = getDb();
-  const books = getAccountBooks(params.userId);
-  const masterCurrency = getMasterCurrency();
+}): Promise<IncomeDashboardData> {
+  const db = getAsyncDb();
+  const books = await getAccountBooks(params.userId);
+  const masterCurrency = await getMasterCurrency();
 
   const isConsolidated = params.bookId === 'all';
   let activeBook = books[0];
@@ -3140,7 +3142,7 @@ export function getIncomeDashboardData(params: {
   }
   allIncomeQuery += ' ORDER BY t.date DESC, t.id DESC';
 
-  const periodTxs = db.prepare(allIncomeQuery).all(...qParams) as unknown as Transaction[];
+  const periodTxs = await db.prepare(allIncomeQuery).all(...qParams) as unknown as Transaction[];
 
   let totalIncome = 0;
   let totalIncomeMaster = 0;
@@ -3220,7 +3222,7 @@ export function getIncomeDashboardData(params: {
     typeMap.set(itype, existing);
   }
 
-  const activeDefs = getIncomeTypes(params.userId);
+  const activeDefs = await getIncomeTypes(params.userId);
   const typeBreakdown: IncomeTypeBreakdown[] = activeDefs.map((def) => {
     const data = typeMap.get(def.type) || { amount: 0, masterAmount: 0, count: 0 };
     return {
@@ -3279,7 +3281,7 @@ export function getIncomeDashboardData(params: {
   }
   yearTrendQuery += " GROUP BY strftime('%m', t.date)";
 
-  const trendRows = db.prepare(yearTrendQuery).all(...ytParams) as {
+  const trendRows = await db.prepare(yearTrendQuery).all(...ytParams) as {
     m_str: string;
     total: number;
     hand_loans: number;
@@ -3333,7 +3335,7 @@ export function getIncomeDashboardData(params: {
   }
   handLoansQuery += " ORDER BY CASE WHEN t.repayment_status = 'pending' THEN 0 ELSE 1 END ASC, t.date DESC LIMIT 50";
 
-  const rawHandLoans = db.prepare(handLoansQuery).all(...hlParams) as unknown as Transaction[];
+  const rawHandLoans = await db.prepare(handLoansQuery).all(...hlParams) as unknown as Transaction[];
   const handLoans: PettyHandLoanItem[] = rawHandLoans.map((hl) => ({
     id: hl.id,
     bookId: hl.book_id,
@@ -3376,7 +3378,7 @@ export function getIncomeDashboardData(params: {
     }))
     .sort((a, b) => b.amount - a.amount);
 
-  const yearRows = db.prepare(`
+  const yearRows = await db.prepare(`
     SELECT DISTINCT strftime('%Y', date) as y
     FROM transactions
     WHERE type = 'income' AND date IS NOT NULL
@@ -3454,9 +3456,9 @@ function parseIncomeTypeRow(row: RawIncomeTypeRow): IncomeStreamDefinition {
   };
 }
 
-export function seedDefaultIncomeTypesForUser(userId: number): void {
-  const db = getDb();
-  const insertStmt = db.prepare(`
+export async function seedDefaultIncomeTypesForUser(userId: number): Promise<void> {
+  const db = getAsyncDb();
+  const insertStmt = await db.prepare(`
     INSERT INTO income_types (
       user_id, type_key, label, short_label, icon, color, description,
       payer_label, payer_placeholder, description_placeholder,
@@ -3464,10 +3466,11 @@ export function seedDefaultIncomeTypesForUser(userId: number): void {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
   `);
 
-  db.exec('BEGIN TRANSACTION;');
+  await db.exec('BEGIN TRANSACTION;');
   try {
-    INCOME_STREAM_DEFINITIONS.forEach((def, index) => {
-      insertStmt.run(
+    for (let index = 0; index < INCOME_STREAM_DEFINITIONS.length; index++) {
+      const def = INCOME_STREAM_DEFINITIONS[index];
+      await insertStmt.run(
         userId,
         def.type,
         def.label,
@@ -3481,16 +3484,16 @@ export function seedDefaultIncomeTypesForUser(userId: number): void {
         JSON.stringify(def.defaultCategories),
         index + 1
       );
-    });
-    db.exec('COMMIT;');
+    }
+    await db.exec('COMMIT;');
   } catch (e) {
-    db.exec('ROLLBACK;');
+    await db.exec('ROLLBACK;');
     console.error('Failed to seed default income types for user:', e);
   }
 }
 
-export function getIncomeTypes(userId?: number): IncomeStreamDefinition[] {
-  const db = getDb();
+export async function getIncomeTypes(userId?: number): Promise<IncomeStreamDefinition[]> {
+  const db = getAsyncDb();
   let query = 'SELECT * FROM income_types';
   const params: (string | number)[] = [];
   if (userId) {
@@ -3499,12 +3502,12 @@ export function getIncomeTypes(userId?: number): IncomeStreamDefinition[] {
   }
   query += ' ORDER BY sort_order ASC, id ASC';
 
-  let rows = db.prepare(query).all(...params) as unknown as RawIncomeTypeRow[];
+  let rows = await db.prepare(query).all(...params) as unknown as RawIncomeTypeRow[];
 
   // If user has no income types configured yet, seed defaults from INCOME_STREAM_DEFINITIONS
   if (rows.length === 0 && userId) {
-    seedDefaultIncomeTypesForUser(userId);
-    rows = db.prepare(query).all(...params) as unknown as RawIncomeTypeRow[];
+    await seedDefaultIncomeTypesForUser(userId);
+    rows = await db.prepare(query).all(...params) as unknown as RawIncomeTypeRow[];
   }
 
   if (rows.length === 0) {
@@ -3514,7 +3517,7 @@ export function getIncomeTypes(userId?: number): IncomeStreamDefinition[] {
   return rows.map(parseIncomeTypeRow);
 }
 
-export function createIncomeType(data: {
+export async function createIncomeType(data: {
   user_id?: number;
   type: string;
   label: string;
@@ -3528,12 +3531,12 @@ export function createIncomeType(data: {
   defaultCategories: string[];
   sort_order?: number;
   is_active?: number;
-}): IncomeStreamDefinition {
-  const db = getDb();
+}): Promise<IncomeStreamDefinition> {
+  const db = getAsyncDb();
   const typeKey = data.type.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
   const sortOrder = data.sort_order ?? 99;
 
-  const res = db.prepare(`
+  const res = await db.prepare(`
     INSERT INTO income_types (
       user_id, type_key, label, short_label, icon, color, description,
       payer_label, payer_placeholder, description_placeholder,
@@ -3555,23 +3558,23 @@ export function createIncomeType(data: {
     data.is_active !== undefined ? data.is_active : 1
   );
 
-  const row = db.prepare('SELECT * FROM income_types WHERE id = ?').get(res.lastInsertRowid) as unknown as RawIncomeTypeRow;
+  const row = await db.prepare('SELECT * FROM income_types WHERE id = ?').get(res.lastInsertRowid) as unknown as RawIncomeTypeRow;
   return parseIncomeTypeRow(row);
 }
 
-export function updateIncomeType(
+export async function updateIncomeType(
   id: number,
   data: Partial<IncomeStreamDefinition>,
   userId?: number
-): IncomeStreamDefinition | null {
-  const db = getDb();
+): Promise<IncomeStreamDefinition | null> {
+  const db = getAsyncDb();
   let query = 'SELECT * FROM income_types WHERE id = ?';
   const params: (string | number)[] = [id];
   if (userId) {
     query += ' AND (user_id = ? OR user_id IS NULL)';
     params.push(userId);
   }
-  const existing = db.prepare(query).get(...params) as unknown as RawIncomeTypeRow | undefined;
+  const existing = await db.prepare(query).get(...params) as unknown as RawIncomeTypeRow | undefined;
   if (!existing) return null;
 
   const anyData = data as Record<string, unknown>;
@@ -3585,7 +3588,7 @@ export function updateIncomeType(
   const payerPlaceholder = (data.payerPlaceholder || anyData.payer_placeholder) as string | undefined;
   const descriptionPlaceholder = (data.descriptionPlaceholder || anyData.description_placeholder) as string | undefined;
 
-  db.prepare(`
+  await db.prepare(`
     UPDATE income_types
     SET label = COALESCE(?, label),
         short_label = COALESCE(?, short_label),
@@ -3614,38 +3617,38 @@ export function updateIncomeType(
     id
   );
 
-  const updated = db.prepare('SELECT * FROM income_types WHERE id = ?').get(id) as unknown as RawIncomeTypeRow;
+  const updated = await db.prepare('SELECT * FROM income_types WHERE id = ?').get(id) as unknown as RawIncomeTypeRow;
   return parseIncomeTypeRow(updated);
 }
 
-export function deleteIncomeType(id: number, userId?: number): boolean {
-  const db = getDb();
+export async function deleteIncomeType(id: number, userId?: number): Promise<boolean> {
+  const db = getAsyncDb();
   let query = 'DELETE FROM income_types WHERE id = ?';
   const params: (string | number)[] = [id];
   if (userId) {
     query += ' AND user_id = ?';
     params.push(userId);
   }
-  const res = db.prepare(query).run(...params);
+  const res = await db.prepare(query).run(...params);
   return res.changes > 0;
 }
 
-export function resetIncomeTypes(userId: number): IncomeStreamDefinition[] {
-  const db = getDb();
-  db.prepare('DELETE FROM income_types WHERE user_id = ?').run(userId);
-  seedDefaultIncomeTypesForUser(userId);
-  return getIncomeTypes(userId);
+export async function resetIncomeTypes(userId: number): Promise<IncomeStreamDefinition[]> {
+  const db = getAsyncDb();
+  await db.prepare('DELETE FROM income_types WHERE user_id = ?').run(userId);
+  await seedDefaultIncomeTypesForUser(userId);
+  return await getIncomeTypes(userId);
 }
 
-export function addIncomeSubcategory(id: number, subcategoryName: string, userId?: number): IncomeStreamDefinition | null {
-  const db = getDb();
+export async function addIncomeSubcategory(id: number, subcategoryName: string, userId?: number): Promise<IncomeStreamDefinition | null> {
+  const db = getAsyncDb();
   let query = 'SELECT * FROM income_types WHERE id = ?';
   const params: (string | number)[] = [id];
   if (userId) {
     query += ' AND (user_id = ? OR user_id IS NULL)';
     params.push(userId);
   }
-  const existing = db.prepare(query).get(...params) as unknown as RawIncomeTypeRow | undefined;
+  const existing = await db.prepare(query).get(...params) as unknown as RawIncomeTypeRow | undefined;
   if (!existing) return null;
 
   let currentSubcats: string[] = [];
@@ -3660,22 +3663,22 @@ export function addIncomeSubcategory(id: number, subcategoryName: string, userId
   const trimmed = subcategoryName.trim();
   if (trimmed && !currentSubcats.includes(trimmed)) {
     currentSubcats.push(trimmed);
-    db.prepare('UPDATE income_types SET subcategories = ? WHERE id = ?').run(JSON.stringify(currentSubcats), id);
+    await db.prepare('UPDATE income_types SET subcategories = ? WHERE id = ?').run(JSON.stringify(currentSubcats), id);
   }
 
-  const updated = db.prepare('SELECT * FROM income_types WHERE id = ?').get(id) as unknown as RawIncomeTypeRow;
+  const updated = await db.prepare('SELECT * FROM income_types WHERE id = ?').get(id) as unknown as RawIncomeTypeRow;
   return parseIncomeTypeRow(updated);
 }
 
-export function removeIncomeSubcategory(id: number, subcategoryName: string, userId?: number): IncomeStreamDefinition | null {
-  const db = getDb();
+export async function removeIncomeSubcategory(id: number, subcategoryName: string, userId?: number): Promise<IncomeStreamDefinition | null> {
+  const db = getAsyncDb();
   let query = 'SELECT * FROM income_types WHERE id = ?';
   const params: (string | number)[] = [id];
   if (userId) {
     query += ' AND (user_id = ? OR user_id IS NULL)';
     params.push(userId);
   }
-  const existing = db.prepare(query).get(...params) as unknown as RawIncomeTypeRow | undefined;
+  const existing = await db.prepare(query).get(...params) as unknown as RawIncomeTypeRow | undefined;
   if (!existing) return null;
 
   let currentSubcats: string[] = [];
@@ -3688,9 +3691,9 @@ export function removeIncomeSubcategory(id: number, subcategoryName: string, use
   }
 
   const filtered = currentSubcats.filter((s) => s !== subcategoryName);
-  db.prepare('UPDATE income_types SET subcategories = ? WHERE id = ?').run(JSON.stringify(filtered), id);
+  await db.prepare('UPDATE income_types SET subcategories = ? WHERE id = ?').run(JSON.stringify(filtered), id);
 
-  const updated = db.prepare('SELECT * FROM income_types WHERE id = ?').get(id) as unknown as RawIncomeTypeRow;
+  const updated = await db.prepare('SELECT * FROM income_types WHERE id = ?').get(id) as unknown as RawIncomeTypeRow;
   return parseIncomeTypeRow(updated);
 }
 

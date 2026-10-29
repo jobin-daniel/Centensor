@@ -22,7 +22,7 @@ export async function GET(request: Request) {
     const payment_method = searchParams.get('paymentMethod') || undefined;
     const limit = searchParams.get('limit') ? parseInt(searchParams.get('limit')!, 10) : 100;
 
-    const transactions = getTransactions({
+    const transactions = await getTransactions({
       book_id,
       month,
       date,
@@ -70,12 +70,12 @@ export async function POST(request: Request) {
     }
 
     // Verify book belongs to this user
-    const book = getAccountBookById(Number(book_id), user!.id);
+    const book = await getAccountBookById(Number(book_id), user!.id);
     if (!book) {
       return NextResponse.json({ success: false, error: 'Account book not found' }, { status: 404 });
     }
 
-    const tx = createTransaction({
+    const tx = await createTransaction({
       book_id: Number(book_id),
       date,
       amount: Number(amount),
@@ -110,7 +110,7 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ success: false, error: 'Transaction ID is required' }, { status: 400 });
     }
 
-    deleteTransaction(parseInt(id, 10), user!.id);
+    await deleteTransaction(parseInt(id, 10), user!.id);
     return NextResponse.json({ success: true });
   } catch (error) {
     return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
@@ -146,19 +146,19 @@ export async function PUT(request: Request) {
       return NextResponse.json({ success: false, error: 'Transaction ID is required' }, { status: 400 });
     }
 
-    const existingTx = getTransactionById(Number(id), user!.id);
+    const existingTx = await getTransactionById(Number(id), user!.id);
     if (!existingTx) {
       return NextResponse.json({ success: false, error: 'Transaction not found' }, { status: 404 });
     }
 
     if (book_id && Number(book_id) !== existingTx.book_id) {
-      const book = getAccountBookById(Number(book_id), user!.id);
+      const book = await getAccountBookById(Number(book_id), user!.id);
       if (!book) {
         return NextResponse.json({ success: false, error: 'Account book not found' }, { status: 404 });
       }
     }
 
-    const updated = updateTransaction(
+    const updated = await updateTransaction(
       Number(id),
       {
         book_id: book_id ? Number(book_id) : undefined,
