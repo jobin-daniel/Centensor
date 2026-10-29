@@ -13,11 +13,15 @@ export function isCloudflare(): boolean {
     process.env.NEXT_RUNTIME === 'edge' ||
     Boolean((globalThis as any).DB) ||
     Boolean((process.env as any).DB) ||
-    Boolean((globalThis as any).__CF_PAGES_CTX__)
+    Boolean((globalThis as any).__CF_PAGES_CTX__) ||
+    Boolean((globalThis as any)[Symbol.for('__cloudflare-context__')])
   );
 }
 
 export function getD1(): any {
+  if (typeof (globalThis as any)[Symbol.for('__cloudflare-context__')]?.env?.DB !== 'undefined') {
+    return (globalThis as any)[Symbol.for('__cloudflare-context__')].env.DB;
+  }
   if (typeof (globalThis as any).DB !== 'undefined') {
     return (globalThis as any).DB;
   }
@@ -31,8 +35,10 @@ export function getD1(): any {
     return (globalThis as any).__env__.DB;
   }
   try {
-    const globalContext = (globalThis as any).__CF_PAGES_CTX__ || (globalThis as any).__openNextContext;
-    if (globalContext?.env?.DB) return globalContext.env.DB;
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getCloudflareContext } = require('@opennextjs/cloudflare');
+    const ctx = getCloudflareContext();
+    if (ctx?.env?.DB) return ctx.env.DB;
   } catch {
     // Ignore if not present
   }
@@ -99,6 +105,13 @@ export function getAsyncDb(): AsyncDb {
         };
       },
     };
+  }
+
+  // If running in Cloudflare environment but D1 binding is not resolved, fail clearly
+  if (isCloudflare()) {
+    throw new Error(
+      "Cloudflare D1 database binding 'DB' was not found. Please verify that database 'centensor-db' is bound to variable 'DB' in wrangler.jsonc or Cloudflare Dashboard."
+    );
   }
 
   // Local SQLite fallback (Node.js runtime)

@@ -6,6 +6,13 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Sparkles, Lock, Mail, ArrowRight, AlertCircle, ShieldCheck } from 'lucide-react';
 
+interface DbStatus {
+  state: 'checking' | 'connected' | 'error';
+  engine?: string;
+  userCount?: number;
+  message?: string;
+}
+
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState('');
@@ -13,12 +20,39 @@ export default function LoginPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [isLocalHost, setIsLocalHost] = useState(false);
+  const [dbStatus, setDbStatus] = useState<DbStatus>({ state: 'checking' });
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const host = window.location.hostname;
       setIsLocalHost(host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host.endsWith('.local'));
     }
+
+    const checkDb = async () => {
+      try {
+        const res = await fetch('/api/health/db');
+        const data = await res.json();
+        if (res.ok && data.status === 'connected') {
+          setDbStatus({
+            state: 'connected',
+            engine: data.engine,
+            userCount: data.userCount,
+          });
+        } else {
+          setDbStatus({
+            state: 'error',
+            message: data.message || 'Database ping failed',
+          });
+        }
+      } catch (err: any) {
+        setDbStatus({
+          state: 'error',
+          message: err.message || 'Failed to ping database',
+        });
+      }
+    };
+
+    checkDb();
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -100,6 +134,102 @@ export default function LoginPage() {
           <p style={{ fontSize: '14px', color: 'var(--text-muted)' }}>
             Sign in to access your multi-currency general ledgers & analytics
           </p>
+
+          {/* Database Health & Connectivity Light */}
+          <div style={{ display: 'flex', justifyContent: 'center', marginTop: '14px' }}>
+            <div
+              title={
+                dbStatus.state === 'connected'
+                  ? `Connected to ${dbStatus.engine} (${dbStatus.userCount ?? 0} users in database)`
+                  : dbStatus.message
+              }
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '8px',
+                padding: '5px 14px',
+                borderRadius: '9999px',
+                background:
+                  dbStatus.state === 'connected'
+                    ? 'rgba(34, 197, 94, 0.12)'
+                    : dbStatus.state === 'error'
+                    ? 'rgba(239, 68, 68, 0.12)'
+                    : 'rgba(234, 179, 8, 0.12)',
+                border: `1px solid ${
+                  dbStatus.state === 'connected'
+                    ? 'rgba(34, 197, 94, 0.35)'
+                    : dbStatus.state === 'error'
+                    ? 'rgba(239, 68, 68, 0.35)'
+                    : 'rgba(234, 179, 8, 0.35)'
+                }`,
+                fontSize: '12px',
+                fontWeight: 600,
+                color:
+                  dbStatus.state === 'connected'
+                    ? '#4ade80'
+                    : dbStatus.state === 'error'
+                    ? '#f87171'
+                    : '#fde047',
+                transition: 'all 0.3s ease',
+              }}
+            >
+              <span
+                style={{
+                  position: 'relative',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: '9px',
+                  height: '9px',
+                }}
+              >
+                <span
+                  style={{
+                    position: 'absolute',
+                    width: '100%',
+                    height: '100%',
+                    borderRadius: '50%',
+                    backgroundColor:
+                      dbStatus.state === 'connected'
+                        ? '#22c55e'
+                        : dbStatus.state === 'error'
+                        ? '#ef4444'
+                        : '#eab308',
+                    opacity: 0.6,
+                    transform: dbStatus.state === 'connected' ? 'scale(1.6)' : 'none',
+                    filter: 'blur(2px)',
+                  }}
+                />
+                <span
+                  style={{
+                    position: 'relative',
+                    width: '7px',
+                    height: '7px',
+                    borderRadius: '50%',
+                    backgroundColor:
+                      dbStatus.state === 'connected'
+                        ? '#22c55e'
+                        : dbStatus.state === 'error'
+                        ? '#ef4444'
+                        : '#eab308',
+                    boxShadow:
+                      dbStatus.state === 'connected'
+                        ? '0 0 10px #22c55e, 0 0 4px #22c55e'
+                        : dbStatus.state === 'error'
+                        ? '0 0 10px #ef4444'
+                        : '0 0 10px #eab308',
+                  }}
+                />
+              </span>
+              <span>
+                {dbStatus.state === 'connected'
+                  ? `Database Connected (${dbStatus.engine?.includes('D1') ? 'Cloudflare D1' : 'SQLite'})`
+                  : dbStatus.state === 'error'
+                  ? `Database Offline: ${dbStatus.message || 'Connection failed'}`
+                  : 'Pinging database...'}
+              </span>
+            </div>
+          </div>
         </div>
 
         {error && (
