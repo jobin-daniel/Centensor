@@ -13,9 +13,9 @@ export default function proxy(request: NextRequest) {
 
   const isLoggedIn = Boolean(sessionToken);
   const isAuthRoute = pathname.startsWith('/login') || pathname.startsWith('/register');
-  const isApiAuth = pathname.startsWith('/api/auth');
+  const isApiAuth = pathname.startsWith('/api/auth') || pathname.startsWith('/api/health');
 
-  // Allow auth APIs freely
+  // Allow auth and public health APIs freely
   if (isApiAuth) {
     return NextResponse.next();
   }

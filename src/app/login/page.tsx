@@ -41,7 +41,7 @@ export default function LoginPage() {
         } else {
           setDbStatus({
             state: 'error',
-            message: data.message || 'Database ping failed',
+            message: data.message || data.error || `HTTP ${res.status}: Database ping failed`,
           });
         }
       } catch (err: any) {
